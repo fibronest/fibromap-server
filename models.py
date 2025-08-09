@@ -157,15 +157,19 @@ class DatabaseSchema:
 class User:
     """User model for handling user data."""
     
-    def __init__(self, user_id: int, username: str, email: str, role: str = 'user', 
-                 is_active: bool = True, created_at: datetime = None, last_login: datetime = None):
+    def __init__(self, user_id: int, username: str, email: str, password_hash: str = None,
+                 role: str = 'user', is_active: bool = True, created_at: datetime = None, 
+                 last_login: datetime = None, failed_attempts: int = 0, locked_until: datetime = None):
         self.user_id = user_id
         self.username = username
         self.email = email
+        self.password_hash = password_hash
         self.role = role
         self.is_active = is_active
         self.created_at = created_at or datetime.now()
         self.last_login = last_login
+        self.failed_attempts = failed_attempts
+        self.locked_until = locked_until
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert user to dictionary for JSON serialization."""
@@ -176,7 +180,9 @@ class User:
             'role': self.role,
             'is_active': self.is_active,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'last_login': self.last_login.isoformat() if self.last_login else None
+            'last_login': self.last_login.isoformat() if self.last_login else None,
+            'failed_attempts': self.failed_attempts,
+            'locked_until': self.locked_until.isoformat() if self.locked_until else None
         }
     
     @classmethod
@@ -186,10 +192,13 @@ class User:
             user_id=row[0],
             username=row[1],
             email=row[2],
+            password_hash=row[3],  # This was missing!
             role=row[4],
             is_active=row[5],
             created_at=row[6],
-            last_login=row[7]
+            last_login=row[7],
+            failed_attempts=row[8] if len(row) > 8 else 0,
+            locked_until=row[9] if len(row) > 9 else None
         )
 
 
