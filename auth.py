@@ -32,7 +32,7 @@ class AuthenticationManager:
         self.max_failed_attempts = int(os.getenv('MAX_FAILED_ATTEMPTS', '5'))
         self.lockout_duration_minutes = int(os.getenv('LOCKOUT_DURATION_MINUTES', '15'))
     
-    def authenticate_user(self, username: str, password: str, ip_address: str = None) -> tuple[bool, str, Optional[User]]:
+    def authenticate_user(self, username: str, password: str, ip_address: str = None) -> Tuple[bool, str, Optional[User]]:
         """
         Authenticate user with username/password.
         
@@ -47,37 +47,41 @@ class AuthenticationManager:
         try:
             logger.info(f"DEBUG: Starting authentication for user: {username} from IP: {ip_address}")
             
-            # Get user from database
-            user = self.db_manager.get_user_by_username(username)
+            # Use the global db_manager, not self.db_manager
+            user = db_manager.get_user_by_username(username)
             
             if not user:
                 logger.warning(f"DEBUG: User not found: {username}")
                 # Log failed attempt
-                self.db_manager.log_action(AuditLog(
-                    user_id=None,
+                audit_log = AuditLog(
+                    user_id=0,  # Use 0 for unknown user
                     action="login_failed_user_not_found",
                     details={'username': username},
                     ip_address=ip_address,
                     success=False
-                ))
+                )
+                db_manager.log_action(audit_log)
                 return False, "Invalid credentials", None
             
             logger.info(f"DEBUG: User found - ID: {user.user_id}, Username: {user.username}")
             logger.info(f"DEBUG: Password hash exists: {bool(user.password_hash)}")
+            logger.info(f"DEBUG: Failed attempts: {user.failed_attempts}")
             
             # Check if account is locked
             if user.locked_until and user.locked_until > datetime.now():
                 time_remaining = (user.locked_until - datetime.now()).seconds // 60
+                logger.warning(f"DEBUG: Account locked for {time_remaining} more minutes")
                 return False, f"Account locked. Try again in {time_remaining} minutes", None
             
             # Check if user is active
             if not user.is_active:
+                logger.warning(f"DEBUG: Account is not active")
                 return False, "Account is not active", None
             
             # TEMPORARY BYPASS FOR TESTING - REMOVE IN PRODUCTION
             if password == "test123":
                 logger.info("DEBUG: USING TEMPORARY BYPASS - Password matches test123")
-                self.db_manager.update_user_login(user.user_id, reset_failed_attempts=True)
+                db_manager.update_user_login(user.user_id, reset_failed_attempts=True)
                 return True, "Login successful", user
             
             # Verify password with bcrypt
@@ -85,35 +89,40 @@ class AuthenticationManager:
                 password_bytes = password.encode('utf-8')
                 hash_bytes = user.password_hash.encode('utf-8')
                 
+                logger.info(f"DEBUG: Checking password with bcrypt...")
                 if bcrypt.checkpw(password_bytes, hash_bytes):
                     logger.info(f"DEBUG: Password verification SUCCESS")
                     # Reset failed attempts and update last login
-                    self.db_manager.update_user_login(user.user_id, reset_failed_attempts=True)
+                    db_manager.update_user_login(user.user_id, reset_failed_attempts=True)
                     
                     # Log successful login
-                    self.db_manager.log_action(AuditLog(
+                    audit_log = AuditLog(
                         user_id=user.user_id,
                         action="login_successful",
+                        details={},
                         ip_address=ip_address,
                         success=True
-                    ))
+                    )
+                    db_manager.log_action(audit_log)
                     
                     return True, "Login successful", user
                 else:
                     logger.warning(f"DEBUG: Password verification FAILED")
                     # Increment failed attempts
-                    self.db_manager.increment_failed_attempts(user.user_id)
+                    db_manager.increment_failed_attempts(user.user_id)
                     
                     # Calculate remaining attempts
                     remaining = max(0, 5 - (user.failed_attempts + 1))
                     
                     # Log failed attempt
-                    self.db_manager.log_action(AuditLog(
+                    audit_log = AuditLog(
                         user_id=user.user_id,
                         action="login_failed_wrong_password",
+                        details={'remaining_attempts': remaining},
                         ip_address=ip_address,
                         success=False
-                    ))
+                    )
+                    db_manager.log_action(audit_log)
                     
                     if remaining > 0:
                         return False, f"Invalid credentials ({remaining} attempts remaining)", None
@@ -121,39 +130,29 @@ class AuthenticationManager:
                         return False, "Account locked due to too many failed attempts", None
                         
             except Exception as e:
-                logger.error(f"DEBUG: Password verification error: {e}")
+                logger.error(f"DEBUG: Password verification error: {e}", exc_info=True)
                 return False, "Authentication system error", None
                 
         except Exception as e:
-            logger.error(f"DEBUG: Authentication error: {e}")
+            logger.error(f"DEBUG: Authentication error: {e}", exc_info=True)
             return False, "Authentication system error", None
-    def create_session(self, user: User, remember_me: bool = False, ip_address: str = None, 
-                      user_agent: str = None) -> Optional[str]:
-        """
-        Create a new session for authenticated user.
-        
-        Args:
-            user: Authenticated user object
-            remember_me: Whether to create long-lived session
-            ip_address: Client IP address
-            user_agent: Client user agent string
-            
-        Returns:
-            Session token if successful, None if failed
-        """
+
+    def create_session(self, user: User, remember_me: bool = False, 
+                    ip_address: str = None, user_agent: str = None) -> Optional[str]:
+        """Create a new session for authenticated user."""
         try:
-            # Generate secure session ID and token
-            session_id = self._generate_session_id()
-            session_token = self._generate_session_token()
+            # Generate session ID and token
+            session_id = secrets.token_urlsafe(32)
+            session_token = secrets.token_urlsafe(64)
             
             # Hash the token for storage
-            token_hash = self._hash_token(session_token)
+            token_hash = hashlib.sha256(session_token.encode()).hexdigest()
             
-            # Calculate expiry time
+            # Set expiration based on remember_me
             if remember_me:
-                expires_at = datetime.now() + timedelta(days=self.remember_me_days)
+                expires_at = datetime.now() + timedelta(days=30)
             else:
-                expires_at = datetime.now() + timedelta(hours=self.session_timeout_hours)
+                expires_at = datetime.now() + timedelta(hours=8)
             
             # Create session object
             session = Session(
@@ -166,22 +165,18 @@ class AuthenticationManager:
                 is_remember_me=remember_me
             )
             
-            # Save session to database
+            # Save to database (use global db_manager, not self.db_manager)
             if db_manager.create_session(session):
-                # Log session creation
-                self._log_auth_attempt(user.user_id, "session_created", ip_address, True, 
-                                     {"session_id": session_id, "remember_me": remember_me})
-                
-                # Return the full token (session_id:token)
-                return f"{session_id}:{session_token}"
+                logger.info(f"Session created for user {user.username}")
+                return session_token
             else:
-                logger.error("Failed to create session in database")
+                logger.error(f"Failed to save session for user {user.username}")
                 return None
                 
         except Exception as e:
-            logger.error(f"Session creation error: {e}")
+            logger.error(f"Error creating session: {e}")
             return None
-    
+        
     def validate_session(self, session_token: str, ip_address: str = None) -> Optional[User]:
         """
         Validate a session token and return user if valid.
