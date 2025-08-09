@@ -1,25 +1,9 @@
-# requirements.txt
-"""
-Python dependencies for FibroMAP Railway server.
-"""
-
-# Web framework
 Flask==2.3.3
 Flask-CORS==4.0.0
-
-# Database
 psycopg2-binary==2.9.7
-
-# Authentication & Security
 bcrypt==4.0.1
 PyJWT==2.8.0
-
-# AWS SDK
 boto3==1.28.85
-
-# Utilities
 python-dotenv==1.0.0
 requests==2.31.0
-
-# Production server (optional)
 gunicorn==21.2.0
