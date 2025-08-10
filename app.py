@@ -308,6 +308,127 @@ def get_project(project_id):
         logger.error(f"Get project error: {e}")
         return jsonify({'error': 'Failed to retrieve project'}), 500
 
+# Admin endpoints
+@app.route('/api/admin/users', methods=['GET'])
+@require_admin
+def get_all_users():
+    """Get all users (admin only)."""
+    try:
+        users = db_manager.get_all_users()
+        return jsonify({
+            'users': [user.to_dict() for user in users]
+        })
+    except Exception as e:
+        logger.error(f"Get users error: {e}")
+        return jsonify({'error': 'Failed to retrieve users'}), 500
+
+
+@app.route('/api/admin/users', methods=['POST'])
+@require_admin
+def admin_create_user():
+    """Create new user (admin only)."""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'JSON data required'}), 400
+        
+        username = data.get('username', '').strip()
+        email = data.get('email', '').strip()
+        password = data.get('password', '')
+        role = data.get('role', 'user')
+        
+        if not all([username, email, password]):
+            return jsonify({'error': 'Username, email, and password are required'}), 400
+        
+        # Create user
+        success, message, user = auth_manager.register_user(
+            username, email, password, get_client_ip(), role=role
+        )
+        
+        if not success:
+            return jsonify({'error': message}), 400
+        
+        return jsonify({
+            'message': 'User created successfully',
+            'user': user.to_dict()
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Create user error: {e}")
+        return jsonify({'error': 'Failed to create user'}), 500
+
+
+@app.route('/api/admin/users/<int:user_id>/reset-password', methods=['POST'])
+@require_admin
+def reset_user_password(user_id):
+    """Reset user password (admin only)."""
+    try:
+        data = request.get_json()
+        new_password = data.get('new_password', '')
+        
+        if not new_password:
+            return jsonify({'error': 'New password is required'}), 400
+        
+        success, message = auth_manager.admin_reset_password(user_id, new_password, g.current_user.user_id)
+        
+        if not success:
+            return jsonify({'error': message}), 400
+        
+        return jsonify({'message': 'Password reset successfully'})
+        
+    except Exception as e:
+        logger.error(f"Reset password error: {e}")
+        return jsonify({'error': 'Failed to reset password'}), 500
+
+
+@app.route('/api/admin/users/<int:user_id>/status', methods=['PUT'])
+@require_admin
+def toggle_user_status(user_id):
+    """Toggle user active status (admin only)."""
+    try:
+        data = request.get_json()
+        is_active = data.get('is_active', True)
+        
+        success, message = db_manager.update_user_status(user_id, is_active)
+        
+        if not success:
+            return jsonify({'error': message}), 400
+        
+        return jsonify({'message': 'User status updated successfully'})
+        
+    except Exception as e:
+        logger.error(f"Toggle user status error: {e}")
+        return jsonify({'error': 'Failed to update user status'}), 500
+
+
+@app.route('/api/admin/projects', methods=['GET'])
+@require_admin
+def get_all_projects():
+    """Get all projects (admin only)."""
+    try:
+        projects = db_manager.get_all_projects()
+        return jsonify({
+            'projects': [project.to_dict() for project in projects]
+        })
+    except Exception as e:
+        logger.error(f"Get all projects error: {e}")
+        return jsonify({'error': 'Failed to retrieve projects'}), 500
+
+
+@app.route('/api/admin/audit-logs', methods=['GET'])
+@require_admin
+def get_audit_logs():
+    """Get audit logs (admin only)."""
+    try:
+        limit = request.args.get('limit', 500, type=int)
+        logs = db_manager.get_audit_logs(limit=limit)
+        return jsonify({
+            'logs': [log.to_dict() for log in logs]
+        })
+    except Exception as e:
+        logger.error(f"Get audit logs error: {e}")
+        return jsonify({'error': 'Failed to retrieve audit logs'}), 500
 
 @app.route('/api/projects/<int:project_id>/check-version', methods=['POST'])
 @require_auth
