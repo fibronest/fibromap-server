@@ -354,7 +354,7 @@ class DatabaseManager:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
                     # Get projects where user is owner OR has explicit permissions
-                    # Also include the permission level
+                    # Include owner username and permission level
                     cursor.execute("""
                         SELECT DISTINCT 
                             p.project_id, 
@@ -369,10 +369,12 @@ class DatabaseManager:
                             p.s3_images_folder,
                             CASE 
                                 WHEN p.owner_id = %s THEN 'owner'
-                                ELSE pp.permission_level
-                            END as permission_level
+                                ELSE COALESCE(pp.permission_level, 'read')
+                            END as permission_level,
+                            u.username as owner_username
                         FROM projects p
                         LEFT JOIN project_permissions pp ON p.project_id = pp.project_id AND pp.user_id = %s
+                        LEFT JOIN users u ON p.owner_id = u.user_id
                         WHERE p.is_active = true 
                         AND (p.owner_id = %s OR pp.user_id = %s)
                         ORDER BY p.updated_at DESC
@@ -392,8 +394,9 @@ class DatabaseManager:
                             s3_data_path=row[8],
                             s3_images_folder=row[9]
                         )
-                        # Add permission_level as an attribute
+                        # Add permission_level and owner_username as attributes
                         project.permission_level = row[10]
+                        project.owner_username = row[11]
                         projects.append(project)
                     
                     return projects
@@ -401,7 +404,7 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error getting user projects: {e}")
             return []
-    
+        
     def update_project(self, project_id: int, updated_at: datetime, last_modified_by: int, version_count: int = None) -> bool:
         """Update project metadata after save."""
         try:
