@@ -18,6 +18,8 @@ from models import (
     AuditLog, S3Version
 )
 
+from contextlib import contextmanager
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -40,10 +42,10 @@ class DatabaseManager:
             if not database_url:
                 raise ValueError("DATABASE_URL environment variable not found")
             
-            # Create connection pool
+            # Create connection pool with higher limits
             self.pool = ThreadedConnectionPool(
-                minconn=1,
-                maxconn=20,
+                minconn=2,      # Increase minimum connections
+                maxconn=50,     # Increase maximum connections
                 dsn=database_url
             )
             
@@ -72,10 +74,18 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Failed to ensure database schema: {e}")
             raise
+
     
+    @contextmanager
     def get_connection(self):
-        """Get a database connection from the pool."""
-        return self.pool.getconn()
+        """Get a database connection from the pool as a context manager."""
+        conn = None
+        try:
+            conn = self.pool.getconn()
+            yield conn
+        finally:
+            if conn:
+                self.pool.putconn(conn)
     
     def return_connection(self, conn):
         """Return a database connection to the pool."""
