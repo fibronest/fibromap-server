@@ -154,7 +154,8 @@ class AuthenticationManager:
             # Save to database (use global db_manager, not self.db_manager)
             if db_manager.create_session(session):
                 logger.info(f"Session created for user {user.username}")
-                return session_token
+                # Return the full token format: session_id:token
+                return f"{session_id}:{session_token}"
             else:
                 logger.error(f"Failed to save session for user {user.username}")
                 return None
