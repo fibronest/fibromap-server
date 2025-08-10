@@ -12,10 +12,12 @@ from functools import wraps
 import logging
 from typing import Dict, Any, Optional
 
-from auth import auth_manager
+from auth import AuthenticationManager
 from database import db_manager
 from s3_manager import s3_manager, S3PathHelper
 from models import User, Project, AuditLog, S3Version
+
+auth_manager = AuthenticationManager(db_manager)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

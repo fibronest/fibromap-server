@@ -521,6 +521,3 @@ class AuthenticationManager:
         except Exception as e:
             logger.error(f"Error logging auth attempt: {e}")
 
-
-# Global authentication manager instance
-auth_manager = AuthenticationManager()
