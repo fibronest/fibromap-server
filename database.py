@@ -349,23 +349,35 @@ class DatabaseManager:
             return None
     
     def delete_project(self, project_id: int) -> bool:
-        """Delete a project and all associated permissions."""
+        """Delete a project and all associated data."""
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
-                    # First delete all permissions for this project
+                    # Delete in correct order to avoid foreign key violations
+                    
+                    # First delete audit logs
+                    cursor.execute("""
+                        DELETE FROM audit_log 
+                        WHERE project_id = %s
+                    """, (project_id,))
+                    
+                    # Delete permissions
                     cursor.execute("""
                         DELETE FROM project_permissions 
                         WHERE project_id = %s
                     """, (project_id,))
                     
-                    # Delete any S3 version records if table exists
-                    cursor.execute("""
-                        DELETE FROM s3_versions 
-                        WHERE project_id = %s
-                    """, (project_id,))
+                    # Delete S3 versions (check if table exists first)
+                    try:
+                        cursor.execute("""
+                            DELETE FROM s3_versions 
+                            WHERE project_id = %s
+                        """, (project_id,))
+                    except:
+                        # Table might not exist
+                        pass
                     
-                    # Finally delete the project itself
+                    # Finally delete the project
                     cursor.execute("""
                         DELETE FROM projects 
                         WHERE project_id = %s
@@ -379,6 +391,8 @@ class DatabaseManager:
                     
         except Exception as e:
             logger.error(f"Error deleting project: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
         
     def get_user_projects(self, user_id: int) -> List[Project]:
