@@ -464,8 +464,8 @@ def grant_project_permission(project_id):
         if permission_level not in valid_levels:
             return jsonify({'error': f'Invalid permission level. Must be one of: {valid_levels}'}), 400
         
-        # Get current user (admin)
-        current_user = auth_manager.current_user
+        # Get current user (admin) from g instead of auth_manager
+        current_user = g.current_user  # Changed from auth_manager.current_user
         if not current_user:
             return jsonify({'error': 'Could not identify current user'}), 401
         
@@ -495,7 +495,7 @@ def grant_project_permission(project_id):
     except Exception as e:
         logger.error(f"Failed to grant permission: {e}")
         return jsonify({'error': 'Failed to grant permission'}), 500
-
+    
 
 @app.route('/api/admin/projects/<int:project_id>/permissions/<int:user_id>', methods=['PUT'])
 @require_auth
