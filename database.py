@@ -594,7 +594,7 @@ class DatabaseManager:
                     
         except Exception as e:
             logger.error(f"Error getting project permissions: {e}")
-            return None
+            return []  # Return empty list instead of None for better error handling
 
     def grant_project_permission(self, project_id: int, user_id: int, 
                                 permission_level: str, granted_by: int) -> bool:
@@ -602,18 +602,54 @@ class DatabaseManager:
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("""
-                        INSERT INTO project_permissions 
-                        (project_id, user_id, permission_level, granted_by)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (project_id, user_id) 
-                        DO UPDATE SET permission_level = EXCLUDED.permission_level,
-                                    granted_by = EXCLUDED.granted_by,
-                                    granted_at = CURRENT_TIMESTAMP
-                    """, (project_id, user_id, permission_level, granted_by))
+                    # Special handling for 'owner' permission
+                    if permission_level == 'owner':
+                        # First get current owner if any
+                        cursor.execute("""
+                            SELECT owner_id FROM projects WHERE project_id = %s
+                        """, (project_id,))
+                        
+                        current_owner = cursor.fetchone()
+                        if current_owner and current_owner[0]:
+                            # Downgrade current owner to write permission
+                            cursor.execute("""
+                                INSERT INTO project_permissions 
+                                (project_id, user_id, permission_level, granted_by)
+                                VALUES (%s, %s, 'write', %s)
+                                ON CONFLICT (project_id, user_id) 
+                                DO UPDATE SET permission_level = 'write',
+                                            granted_by = EXCLUDED.granted_by,
+                                            granted_at = CURRENT_TIMESTAMP
+                            """, (project_id, current_owner[0], granted_by))
+                        
+                        # Update project owner
+                        cursor.execute("""
+                            UPDATE projects 
+                            SET owner_id = %s, 
+                                last_modified_by = %s,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE project_id = %s
+                        """, (user_id, granted_by, project_id))
+                        
+                        # Remove any existing permission for new owner (owner is tracked in projects table)
+                        cursor.execute("""
+                            DELETE FROM project_permissions 
+                            WHERE project_id = %s AND user_id = %s
+                        """, (project_id, user_id))
+                    else:
+                        # Regular permission grant
+                        cursor.execute("""
+                            INSERT INTO project_permissions 
+                            (project_id, user_id, permission_level, granted_by)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (project_id, user_id) 
+                            DO UPDATE SET permission_level = EXCLUDED.permission_level,
+                                        granted_by = EXCLUDED.granted_by,
+                                        granted_at = CURRENT_TIMESTAMP
+                        """, (project_id, user_id, permission_level, granted_by))
                     
                     conn.commit()
-                    return cursor.rowcount > 0
+                    return True
                     
         except Exception as e:
             logger.error(f"Error granting permission: {e}")
@@ -627,10 +663,30 @@ class DatabaseManager:
                 with conn.cursor() as cursor:
                     # Handle special case of "owner" permission
                     if permission_level == 'owner':
-                        # First, update the projects table
+                        # Get current owner
+                        cursor.execute("""
+                            SELECT owner_id FROM projects WHERE project_id = %s
+                        """, (project_id,))
+                        
+                        current_owner = cursor.fetchone()
+                        if current_owner and current_owner[0] and current_owner[0] != user_id:
+                            # Downgrade current owner to write
+                            cursor.execute("""
+                                INSERT INTO project_permissions 
+                                (project_id, user_id, permission_level, granted_by)
+                                VALUES (%s, %s, 'write', %s)
+                                ON CONFLICT (project_id, user_id) 
+                                DO UPDATE SET permission_level = 'write',
+                                            granted_by = EXCLUDED.granted_by,
+                                            granted_at = CURRENT_TIMESTAMP
+                            """, (project_id, current_owner[0], modified_by))
+                        
+                        # Update project owner
                         cursor.execute("""
                             UPDATE projects 
-                            SET owner_id = %s, last_modified_by = %s, updated_at = CURRENT_TIMESTAMP
+                            SET owner_id = %s, 
+                                last_modified_by = %s,
+                                updated_at = CURRENT_TIMESTAMP
                             WHERE project_id = %s
                         """, (user_id, modified_by, project_id))
                         
@@ -640,17 +696,44 @@ class DatabaseManager:
                             WHERE project_id = %s AND user_id = %s
                         """, (project_id, user_id))
                     else:
-                        # Regular permission update
+                        # Check if user is currently owner
                         cursor.execute("""
-                            UPDATE project_permissions 
-                            SET permission_level = %s, 
-                                granted_by = %s,
-                                granted_at = CURRENT_TIMESTAMP
-                            WHERE project_id = %s AND user_id = %s
-                        """, (permission_level, modified_by, project_id, user_id))
+                            SELECT owner_id FROM projects WHERE project_id = %s
+                        """, (project_id,))
+                        
+                        owner_row = cursor.fetchone()
+                        if owner_row and owner_row[0] == user_id:
+                            # Remove from owner position
+                            cursor.execute("""
+                                UPDATE projects 
+                                SET owner_id = NULL,
+                                    last_modified_by = %s,
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE project_id = %s
+                            """, (modified_by, project_id))
+                            
+                            # Add as regular permission
+                            cursor.execute("""
+                                INSERT INTO project_permissions 
+                                (project_id, user_id, permission_level, granted_by)
+                                VALUES (%s, %s, %s, %s)
+                                ON CONFLICT (project_id, user_id) 
+                                DO UPDATE SET permission_level = EXCLUDED.permission_level,
+                                            granted_by = EXCLUDED.granted_by,
+                                            granted_at = CURRENT_TIMESTAMP
+                            """, (project_id, user_id, permission_level, modified_by))
+                        else:
+                            # Regular permission update
+                            cursor.execute("""
+                                UPDATE project_permissions 
+                                SET permission_level = %s, 
+                                    granted_by = %s,
+                                    granted_at = CURRENT_TIMESTAMP
+                                WHERE project_id = %s AND user_id = %s
+                            """, (permission_level, modified_by, project_id, user_id))
                     
                     conn.commit()
-                    return cursor.rowcount > 0
+                    return True
                     
         except Exception as e:
             logger.error(f"Error modifying permission: {e}")
@@ -682,11 +765,30 @@ class DatabaseManager:
                         """, (project_id, user_id))
                     
                     conn.commit()
-                    return cursor.rowcount > 0
+                    return True
                     
         except Exception as e:
             logger.error(f"Error revoking permission: {e}")
             return False
+
+    def create_audit_log(self, user_id: int, action: str, project_id: int = None, 
+                        details: str = None, ip_address: str = None) -> bool:
+        """Create an audit log entry."""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO audit_log (user_id, action, project_id, details, ip_address)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (user_id, action, project_id, details, ip_address))
+                    
+                    conn.commit()
+                    return True
+                    
+        except Exception as e:
+            logger.error(f"Error creating audit log: {e}")
+            return False
+        
     def get_user_project_permission(self, project_id: int, user_id: int) -> Optional[str]:
         """Get user's permission level for a project."""
         try:
