@@ -431,6 +431,139 @@ class DatabaseManager:
             logger.error(f"Error assigning project images: {e}")
             return False
     
+    def get_all_users(self):
+        """Get all users from database."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT user_id, username, email, role, is_active, 
+                           created_at, last_login, failed_attempts
+                    FROM users
+                    ORDER BY username
+                """)
+                
+                users = []
+                for row in cursor.fetchall():
+                    users.append(User(
+                        user_id=row[0],
+                        username=row[1],
+                        email=row[2],
+                        role=row[3],
+                        is_active=row[4],
+                        created_at=row[5],
+                        last_login=row[6],
+                        failed_attempts=row[7]
+                    ))
+                
+                return users
+                
+        except Exception as e:
+            logger.error(f"Failed to get all users: {e}")
+            return []
+    
+    def get_all_projects(self):
+        """Get all projects from database."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT p.project_id, p.project_name, p.description,
+                           p.owner_id, p.s3_data_path, p.s3_images_folder,
+                           p.created_at, p.updated_at, p.last_modified_by,
+                           p.version_count, p.is_active,
+                           u.username as owner_username
+                    FROM projects p
+                    LEFT JOIN users u ON p.owner_id = u.user_id
+                    ORDER BY p.updated_at DESC
+                """)
+                
+                projects = []
+                for row in cursor.fetchall():
+                    project = Project(
+                        project_id=row[0],
+                        project_name=row[1],
+                        description=row[2],
+                        owner_id=row[3],
+                        s3_data_path=row[4],
+                        s3_images_folder=row[5],
+                        created_at=row[6],
+                        updated_at=row[7],
+                        last_modified_by=row[8],
+                        version_count=row[9],
+                        is_active=row[10]
+                    )
+                    # Add owner_username as a custom attribute
+                    project.owner_username = row[11]
+                    projects.append(project)
+                
+                return projects
+                
+        except Exception as e:
+            logger.error(f"Failed to get all projects: {e}")
+            return []
+    
+    def update_user_status(self, user_id, is_active):
+        """Update user active status."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE users 
+                    SET is_active = %s
+                    WHERE user_id = %s
+                """, (is_active, user_id))
+                
+                conn.commit()
+                
+                if cursor.rowcount > 0:
+                    return True, "User status updated successfully"
+                else:
+                    return False, "User not found"
+                    
+        except Exception as e:
+            logger.error(f"Failed to update user status: {e}")
+            return False, str(e)
+    
+    def get_audit_logs(self, limit=500):
+        """Get audit logs from database."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT al.log_id, al.user_id, al.action, al.project_id,
+                           al.details, al.timestamp, al.ip_address, al.success,
+                           u.username, p.project_name
+                    FROM audit_log al
+                    LEFT JOIN users u ON al.user_id = u.user_id
+                    LEFT JOIN projects p ON al.project_id = p.project_id
+                    ORDER BY al.timestamp DESC
+                    LIMIT %s
+                """, (limit,))
+                
+                logs = []
+                for row in cursor.fetchall():
+                    log = AuditLog(
+                        log_id=row[0],
+                        user_id=row[1],
+                        action=row[2],
+                        project_id=row[3],
+                        details=row[4],
+                        timestamp=row[5],
+                        ip_address=row[6],
+                        success=row[7] if row[7] is not None else True
+                    )
+                    # Add username and project_name as custom attributes
+                    log.username = row[8]
+                    log.project_name = row[9]
+                    logs.append(log)
+                
+                return logs
+                
+        except Exception as e:
+            logger.error(f"Failed to get audit logs: {e}")
+            return []
+
     # Project permissions operations
     
     def grant_project_permission(self, project_id: int, user_id: int, permission_level: str, granted_by: int) -> bool:

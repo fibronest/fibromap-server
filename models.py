@@ -208,7 +208,8 @@ class Project:
     def __init__(self, project_id: int, project_name: str, owner_id: int, 
                  s3_data_path: str, description: str = None, s3_images_folder: str = None,
                  created_at: datetime = None, updated_at: datetime = None,
-                 last_modified_by: int = None, version_count: int = 0):
+                 last_modified_by: int = None, version_count: int = 0, 
+                 is_active: bool = True):  # Add is_active parameter
         self.project_id = project_id
         self.project_name = project_name
         self.description = description
@@ -219,10 +220,12 @@ class Project:
         self.updated_at = updated_at or datetime.now()
         self.last_modified_by = last_modified_by
         self.version_count = version_count
+        self.is_active = is_active  # Add this field
+        self.owner_username = None  # Add this for when we join with users table
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert project to dictionary for JSON serialization."""
-        return {
+        result = {
             'project_id': self.project_id,
             'project_name': self.project_name,
             'description': self.description,
@@ -232,13 +235,21 @@ class Project:
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'last_modified_by': self.last_modified_by,
-            'version_count': self.version_count
+            'version_count': self.version_count,
+            'is_active': self.is_active  # Add to dict
         }
+        
+        # Include owner_username if available
+        if hasattr(self, 'owner_username') and self.owner_username:
+            result['owner_username'] = self.owner_username
+            
+        return result
     
     @classmethod
     def from_db_row(cls, row: tuple) -> 'Project':
         """Create Project instance from database row."""
-        return cls(
+        # Handle both 10 and 11 column versions
+        project = cls(
             project_id=row[0],
             project_name=row[1],
             description=row[2],
@@ -248,8 +259,15 @@ class Project:
             created_at=row[6],
             updated_at=row[7],
             last_modified_by=row[8],
-            version_count=row[9]
+            version_count=row[9] if len(row) > 9 else 0,
+            is_active=row[10] if len(row) > 10 else True
         )
+        
+        # If owner_username is included in the row (from a JOIN)
+        if len(row) > 11:
+            project.owner_username = row[11]
+            
+        return project
 
 
 class Session:

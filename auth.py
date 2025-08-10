@@ -137,6 +137,62 @@ class AuthenticationManager:
         except Exception as e:
             logger.error(f"Authentication error: {e}", exc_info=True)
             return False, "Authentication system error", None
+    
+    def admin_reset_password(self, user_id, new_password, admin_id):
+        """
+        Admin resets a user's password.
+        
+        Args:
+            user_id: ID of user whose password to reset
+            new_password: New password
+            admin_id: ID of admin performing the reset
+            
+        Returns:
+            Tuple of (success, message)
+        """
+        try:
+            # Hash the new password
+            password_hash = bcrypt.hashpw(
+                new_password.encode('utf-8'), 
+                bcrypt.gensalt(rounds=self.bcrypt_rounds)
+            ).decode('utf-8')
+            
+            with self.db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Update password
+                cursor.execute("""
+                    UPDATE users 
+                    SET password_hash = %s, 
+                        failed_attempts = 0,
+                        locked_until = NULL,
+                        password_changed_at = CURRENT_TIMESTAMP
+                    WHERE user_id = %s
+                """, (password_hash, user_id))
+                
+                if cursor.rowcount == 0:
+                    return False, "User not found"
+                
+                # Log the action
+                cursor.execute("""
+                    INSERT INTO audit_log (user_id, action, details, ip_address, success)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (
+                    admin_id,
+                    'admin_reset_password',
+                    f'Reset password for user_id: {user_id}',
+                    '0.0.0.0',  # Admin action, IP not relevant
+                    True
+                ))
+                
+                conn.commit()
+                
+                logger.info(f"Admin {admin_id} reset password for user {user_id}")
+                return True, "Password reset successfully"
+                
+        except Exception as e:
+            logger.error(f"Failed to reset password: {e}")
+            return False, str(e)
         
     def create_session(self, user: User, remember_me: bool = False, 
                     ip_address: str = None, user_agent: str = None) -> Optional[str]:
