@@ -8,6 +8,7 @@ import os
 import secrets
 import hashlib
 import bcrypt
+import json
 import re
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Tuple
@@ -24,13 +25,33 @@ logger = logging.getLogger(__name__)
 class AuthenticationManager:
     """Handles user authentication and session management."""
     
-    def __init__(self):
-        """Initialize authentication manager."""
-        self.session_timeout_hours = int(os.getenv('SESSION_TIMEOUT_HOURS', '8'))
+    def __init__(self, db_manager):
+        """
+        Initialize authentication manager for Railway server.
+        
+        Args:
+            db_manager: Database manager instance for PostgreSQL connection
+        """
+        self.db_manager = db_manager
+        
+        # BCrypt configuration
+        self.bcrypt_rounds = int(os.getenv('BCRYPT_ROUNDS', '12'))
+        
+        # Session configuration
+        self.session_timeout_hours = int(os.getenv('SESSION_TIMEOUT_HOURS', '24'))
         self.remember_me_days = int(os.getenv('REMEMBER_ME_DAYS', '30'))
-        self.password_min_length = int(os.getenv('PASSWORD_MIN_LENGTH', '8'))
+        
+        # Security configuration
         self.max_failed_attempts = int(os.getenv('MAX_FAILED_ATTEMPTS', '5'))
-        self.lockout_duration_minutes = int(os.getenv('LOCKOUT_DURATION_MINUTES', '15'))
+        self.lockout_duration_minutes = int(os.getenv('LOCKOUT_DURATION_MINUTES', '30'))
+        
+        # Password requirements
+        self.password_min_length = int(os.getenv('PASSWORD_MIN_LENGTH', '8'))
+        
+        # Current authentication state (used during request processing)
+        self.current_user = None
+        
+        logger.info(f"AuthManager initialized with bcrypt_rounds={self.bcrypt_rounds}")
     
     def authenticate_user(self, username: str, password: str, ip_address: str = None) -> tuple[bool, str, Optional[User]]:
         """
@@ -180,7 +201,7 @@ class AuthenticationManager:
                 """, (
                     admin_id,
                     'admin_reset_password',
-                    f'Reset password for user_id: {user_id}',
+                    json.dumps({'target_user_id': user_id}),
                     '0.0.0.0',  # Admin action, IP not relevant
                     True
                 ))
@@ -193,7 +214,6 @@ class AuthenticationManager:
         except Exception as e:
             logger.error(f"Failed to reset password: {e}")
             return False, str(e)
-        
     def create_session(self, user: User, remember_me: bool = False, 
                     ip_address: str = None, user_agent: str = None) -> Optional[str]:
         """Create a new session for authenticated user."""
