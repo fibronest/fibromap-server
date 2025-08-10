@@ -382,8 +382,6 @@ class DatabaseManager:
                     
                     projects = []
                     for row in cursor.fetchall():
-                        # Debug logging
-                        logger.info(f"Project {row[0]} ({row[1]}): owner_id={row[3]}, owner_username={row[11]}, permission={row[10]}")
                         
                         project = Project(
                             project_id=row[0],
@@ -406,7 +404,6 @@ class DatabaseManager:
                         
                         projects.append(project)
                     
-                    logger.info(f"Returning {len(projects)} projects for user {user_id}")
                     return projects
                     
         except Exception as e:
