@@ -353,18 +353,43 @@ class DatabaseManager:
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
+                    # Get projects where user is owner OR has explicit permissions
                     cursor.execute("""
-                        SELECT DISTINCT p.project_id, p.project_name, p.description, p.owner_id, 
-                               p.s3_data_path, p.s3_images_folder, p.created_at, p.updated_at, 
-                               p.last_modified_by, p.version_count
+                        SELECT DISTINCT 
+                            p.project_id, 
+                            p.project_name, 
+                            p.description,
+                            p.owner_id,
+                            p.created_at,
+                            p.updated_at,
+                            p.last_modified_by,
+                            p.version_count,
+                            p.s3_data_path,
+                            p.s3_images_folder
                         FROM projects p
                         LEFT JOIN project_permissions pp ON p.project_id = pp.project_id
-                        WHERE (p.owner_id = %s OR pp.user_id = %s) AND p.is_active = true
+                        WHERE p.is_active = true 
+                        AND (p.owner_id = %s OR pp.user_id = %s)
                         ORDER BY p.updated_at DESC
                     """, (user_id, user_id))
                     
-                    rows = cursor.fetchall()
-                    return [Project.from_db_row(row) for row in rows]
+                    projects = []
+                    for row in cursor.fetchall():
+                        project = Project(
+                            project_id=row[0],
+                            project_name=row[1],
+                            description=row[2],
+                            owner_id=row[3],
+                            created_at=row[4],
+                            updated_at=row[5],
+                            last_modified_by=row[6],
+                            version_count=row[7],
+                            s3_data_path=row[8],
+                            s3_images_folder=row[9]
+                        )
+                        projects.append(project)
+                    
+                    return projects
                     
         except Exception as e:
             logger.error(f"Error getting user projects: {e}")
