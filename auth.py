@@ -45,84 +45,99 @@ class AuthenticationManager:
             Tuple of (success, message, user_object)
         """
         try:
-            logger.info(f"DEBUG: Starting authentication for user: {username} from IP: {ip_address}")
+            logger.info(f"Authentication attempt for user: {username} from IP: {ip_address}")
             
-            # Use global db_manager
+            # Get user from database
             user = db_manager.get_user_by_username(username)
             
             if not user:
-                logger.warning(f"DEBUG: User not found: {username}")
+                logger.warning(f"User not found: {username}")
+                # Log failed attempt with no user_id
+                self._log_auth_attempt(None, "login_failed_user_not_found", ip_address, False, 
+                                     {"username": username})
                 return False, "Invalid credentials", None
-            
-            logger.info(f"DEBUG: User found - ID: {user.user_id}, Username: {user.username}")
-            logger.info(f"DEBUG: Password hash exists: {bool(user.password_hash)}")
-            logger.info(f"DEBUG: Failed attempts: {user.failed_attempts}")
             
             # Check if account is locked
             if user.locked_until and user.locked_until > datetime.now():
                 time_remaining = (user.locked_until - datetime.now()).seconds // 60
+                logger.warning(f"Login attempt for locked account: {username}")
+                self._log_auth_attempt(user.user_id, "login_failed_account_locked", ip_address, False)
                 return False, f"Account locked. Try again in {time_remaining} minutes", None
             
             # Check if user is active
             if not user.is_active:
+                logger.warning(f"Login attempt for inactive account: {username}")
+                self._log_auth_attempt(user.user_id, "login_failed_account_inactive", ip_address, False)
                 return False, "Account is not active", None
             
-            # TEMPORARY BYPASS - MOVE THIS BEFORE BCRYPT CHECK
-            if password in ["test123", "admin123"]:  # Allow both for testing
-                logger.info(f"DEBUG: USING TEMPORARY BYPASS - Password matches {password}")
-                db_manager.update_user_login(user.user_id, reset_failed_attempts=True)
-                
-                # Log successful login
-                audit_log = AuditLog(
-                    user_id=user.user_id,
-                    action="login_successful_bypass",  # Mark as bypass for tracking
-                    details={},
-                    ip_address=ip_address,
-                    success=True
-                )
-                db_manager.log_action(audit_log)
-                
-                return True, "Login successful", user
-            
-            # Normal bcrypt verification (currently not working)
+            # Verify password using bcrypt
             try:
-                logger.info(f"DEBUG: Attempting bcrypt verification...")
+                # Encode password and hash for comparison
                 password_bytes = password.encode('utf-8')
-                hash_bytes = user.password_hash.encode('utf-8')
                 
+                # If password_hash is stored as string, encode it
+                if isinstance(user.password_hash, str):
+                    hash_bytes = user.password_hash.encode('utf-8')
+                else:
+                    hash_bytes = user.password_hash
+                
+                # Verify password
                 if bcrypt.checkpw(password_bytes, hash_bytes):
-                    logger.info(f"DEBUG: Password verification SUCCESS")
+                    # Password is correct
+                    logger.info(f"Successful login for user: {username}")
+                    
+                    # Reset failed attempts and update last login
                     db_manager.update_user_login(user.user_id, reset_failed_attempts=True)
                     
-                    audit_log = AuditLog(
-                        user_id=user.user_id,
-                        action="login_successful",
-                        details={},
-                        ip_address=ip_address,
-                        success=True
-                    )
-                    db_manager.log_action(audit_log)
+                    # Log successful login
+                    self._log_auth_attempt(user.user_id, "login_successful", ip_address, True)
                     
                     return True, "Login successful", user
+                    
                 else:
-                    logger.warning(f"DEBUG: Password verification FAILED")
-                    db_manager.increment_failed_attempts(user.user_id)
+                    # Password is incorrect
+                    logger.warning(f"Invalid password for user: {username}")
                     
-                    remaining = max(0, 5 - (user.failed_attempts + 1))
+                    # Increment failed attempts
+                    new_failed_attempts = db_manager.increment_failed_attempts(user.user_id)
                     
-                    if remaining > 0:
-                        return False, f"Invalid credentials ({remaining} attempts remaining)", None
-                    else:
-                        return False, "Account locked due to too many failed attempts", None
+                    # Check if account should be locked
+                    if new_failed_attempts >= self.max_failed_attempts:
+                        # Lock the account
+                        lockout_until = datetime.now() + timedelta(minutes=self.lockout_duration_minutes)
+                        db_manager.lock_user_account(user.user_id, lockout_until)
                         
-            except Exception as e:
-                logger.error(f"DEBUG: Password verification error: {e}", exc_info=True)
+                        logger.warning(f"Account locked due to too many failed attempts: {username}")
+                        self._log_auth_attempt(user.user_id, "account_locked", ip_address, False,
+                                             {"failed_attempts": new_failed_attempts})
+                        
+                        return False, "Account locked due to too many failed attempts", None
+                    else:
+                        # Calculate remaining attempts
+                        remaining = self.max_failed_attempts - new_failed_attempts
+                        
+                        self._log_auth_attempt(user.user_id, "login_failed_invalid_password", ip_address, False,
+                                             {"failed_attempts": new_failed_attempts, "remaining": remaining})
+                        
+                        if remaining > 0:
+                            return False, f"Invalid credentials ({remaining} attempts remaining)", None
+                        else:
+                            return False, "Invalid credentials", None
+                            
+            except ValueError as e:
+                # This happens if the stored hash is not a valid bcrypt hash
+                logger.error(f"Invalid password hash format for user {username}: {e}")
+                
+                # You might want to handle this differently in production
+                # For now, treat it as invalid credentials
+                self._log_auth_attempt(user.user_id, "login_failed_hash_error", ip_address, False,
+                                     {"error": str(e)})
                 return False, "Authentication system error", None
                 
         except Exception as e:
-            logger.error(f"DEBUG: Authentication error: {e}", exc_info=True)
+            logger.error(f"Authentication error: {e}", exc_info=True)
             return False, "Authentication system error", None
-    
+        
     def create_session(self, user: User, remember_me: bool = False, 
                     ip_address: str = None, user_agent: str = None) -> Optional[str]:
         """Create a new session for authenticated user."""
