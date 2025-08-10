@@ -421,6 +421,170 @@ def toggle_user_status(user_id):
         logger.error(f"Toggle user status error: {e}")
         return jsonify({'error': 'Failed to update user status'}), 500
 
+@app.route('/api/admin/projects/<int:project_id>/permissions', methods=['GET'])
+@require_auth
+@require_admin
+def get_project_permissions(project_id):
+    """Get all permissions for a project (admin only)."""
+    try:
+        permissions = db_manager.get_project_permissions(project_id)
+        
+        if permissions is None:
+            return jsonify({'error': 'Project not found'}), 404
+        
+        return jsonify({
+            'permissions': permissions,
+            'project_id': project_id
+        })
+        
+    except Exception as e:
+        logger.error(f"Failed to get project permissions: {e}")
+        return jsonify({'error': 'Failed to retrieve permissions'}), 500
+
+
+@app.route('/api/admin/projects/<int:project_id>/permissions', methods=['POST'])
+@require_auth
+@require_admin
+def grant_project_permission(project_id):
+    """Grant permission to a user for a project (admin only)."""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'JSON data required'}), 400
+        
+        user_id = data.get('user_id')
+        permission_level = data.get('permission_level')
+        
+        if not user_id or not permission_level:
+            return jsonify({'error': 'user_id and permission_level are required'}), 400
+        
+        # Validate permission level
+        valid_levels = ['read', 'write', 'owner']
+        if permission_level not in valid_levels:
+            return jsonify({'error': f'Invalid permission level. Must be one of: {valid_levels}'}), 400
+        
+        # Get current user (admin)
+        current_user = auth_manager.current_user
+        if not current_user:
+            return jsonify({'error': 'Could not identify current user'}), 401
+        
+        # Grant permission
+        success = db_manager.grant_project_permission(
+            project_id, user_id, permission_level, current_user.user_id
+        )
+        
+        if success:
+            # Log the action
+            db_manager.create_audit_log(
+                user_id=current_user.user_id,
+                action='grant_permission',
+                project_id=project_id,
+                details=f'Granted {permission_level} permission to user {user_id}'
+            )
+            
+            return jsonify({
+                'message': f'Successfully granted {permission_level} permission',
+                'project_id': project_id,
+                'user_id': user_id,
+                'permission_level': permission_level
+            })
+        else:
+            return jsonify({'error': 'Failed to grant permission'}), 500
+            
+    except Exception as e:
+        logger.error(f"Failed to grant permission: {e}")
+        return jsonify({'error': 'Failed to grant permission'}), 500
+
+
+@app.route('/api/admin/projects/<int:project_id>/permissions/<int:user_id>', methods=['PUT'])
+@require_auth
+@require_admin
+def modify_project_permission(project_id, user_id):
+    """Modify a user's permission for a project (admin only)."""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'JSON data required'}), 400
+        
+        permission_level = data.get('permission_level')
+        
+        if not permission_level:
+            return jsonify({'error': 'permission_level is required'}), 400
+        
+        # Validate permission level
+        valid_levels = ['read', 'write', 'owner']
+        if permission_level not in valid_levels:
+            return jsonify({'error': f'Invalid permission level. Must be one of: {valid_levels}'}), 400
+        
+        # Get current user (admin)
+        current_user = auth_manager.current_user
+        if not current_user:
+            return jsonify({'error': 'Could not identify current user'}), 401
+        
+        # Modify permission
+        success = db_manager.modify_project_permission(
+            project_id, user_id, permission_level, current_user.user_id
+        )
+        
+        if success:
+            # Log the action
+            db_manager.create_audit_log(
+                user_id=current_user.user_id,
+                action='modify_permission',
+                project_id=project_id,
+                details=f'Modified permission for user {user_id} to {permission_level}'
+            )
+            
+            return jsonify({
+                'message': f'Successfully modified permission to {permission_level}',
+                'project_id': project_id,
+                'user_id': user_id,
+                'permission_level': permission_level
+            })
+        else:
+            return jsonify({'error': 'Failed to modify permission'}), 500
+            
+    except Exception as e:
+        logger.error(f"Failed to modify permission: {e}")
+        return jsonify({'error': 'Failed to modify permission'}), 500
+
+
+@app.route('/api/admin/projects/<int:project_id>/permissions/<int:user_id>', methods=['DELETE'])
+@require_auth
+@require_admin
+def revoke_project_permission(project_id, user_id):
+    """Revoke a user's permission for a project (admin only)."""
+    try:
+        # Get current user (admin)
+        current_user = auth_manager.current_user
+        if not current_user:
+            return jsonify({'error': 'Could not identify current user'}), 401
+        
+        # Revoke permission
+        success = db_manager.revoke_project_permission(project_id, user_id)
+        
+        if success:
+            # Log the action
+            db_manager.create_audit_log(
+                user_id=current_user.user_id,
+                action='revoke_permission',
+                project_id=project_id,
+                details=f'Revoked permission for user {user_id}'
+            )
+            
+            return jsonify({
+                'message': 'Successfully revoked permission',
+                'project_id': project_id,
+                'user_id': user_id
+            })
+        else:
+            return jsonify({'error': 'Failed to revoke permission'}), 500
+            
+    except Exception as e:
+        logger.error(f"Failed to revoke permission: {e}")
+        return jsonify({'error': 'Failed to revoke permission'}), 500
 
 @app.route('/api/admin/projects', methods=['GET'])
 @require_admin
