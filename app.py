@@ -285,7 +285,46 @@ def create_project():
         logger.error(f"Create project error: {e}")
         return jsonify({'error': 'Failed to create project'}), 500
 
-
+@app.route('/api/projects/<int:project_id>', methods=['DELETE'])
+@require_auth
+def delete_project(project_id):
+    """Delete a project (owner or admin only)."""
+    try:
+        user = g.current_user
+        
+        # Get project using existing method
+        project = db_manager.get_project(project_id)  # Use existing method
+        if not project:
+            return jsonify({'error': 'Project not found'}), 404
+        
+        # Check if user can delete (owner or admin)
+        if user.role != 'admin' and project.owner_id != user.user_id:
+            return jsonify({'error': 'Unauthorized to delete this project'}), 403
+        
+        # Delete the project and all associated permissions
+        success = db_manager.delete_project(project_id)
+        
+        if success:
+            # Log the deletion
+            db_manager.create_audit_log(
+                user_id=user.user_id,
+                action='delete_project',
+                project_id=project_id,
+                details=f'Deleted project: {project.project_name}',
+                ip_address=get_client_ip()
+            )
+            
+            return jsonify({
+                'message': 'Project deleted successfully',
+                'project_id': project_id
+            })
+        else:
+            return jsonify({'error': 'Failed to delete project'}), 500
+            
+    except Exception as e:
+        logger.error(f"Delete project error: {e}")
+        return jsonify({'error': 'Failed to delete project'}), 500
+    
 @app.route('/api/projects/<int:project_id>', methods=['GET'])
 @require_auth
 def get_project(project_id):

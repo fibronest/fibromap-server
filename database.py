@@ -348,6 +348,39 @@ class DatabaseManager:
             logger.error(f"Error getting project: {e}")
             return None
     
+    def delete_project(self, project_id: int) -> bool:
+        """Delete a project and all associated permissions."""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # First delete all permissions for this project
+                    cursor.execute("""
+                        DELETE FROM project_permissions 
+                        WHERE project_id = %s
+                    """, (project_id,))
+                    
+                    # Delete any S3 version records if table exists
+                    cursor.execute("""
+                        DELETE FROM s3_versions 
+                        WHERE project_id = %s
+                    """, (project_id,))
+                    
+                    # Finally delete the project itself
+                    cursor.execute("""
+                        DELETE FROM projects 
+                        WHERE project_id = %s
+                    """, (project_id,))
+                    
+                    rows_deleted = cursor.rowcount
+                    conn.commit()
+                    
+                    logger.info(f"Deleted project {project_id} and all associated data")
+                    return rows_deleted > 0
+                    
+        except Exception as e:
+            logger.error(f"Error deleting project: {e}")
+            return False
+        
     def get_user_projects(self, user_id: int) -> List[Project]:
         """Get all projects accessible to a user (owned or has permissions)."""
         try:
