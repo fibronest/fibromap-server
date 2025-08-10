@@ -395,6 +395,24 @@ class DatabaseManager:
             logger.error(f"Error updating project: {e}")
             return False
     
+    def update_project_s3_path(self, project_id: int, s3_data_path: str) -> bool:
+        """Update project's S3 data path after creation."""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE projects 
+                        SET s3_data_path = %s
+                        WHERE project_id = %s
+                    """, (s3_data_path, project_id))
+                    
+                    conn.commit()
+                    return cursor.rowcount > 0
+                    
+        except Exception as e:
+            logger.error(f"Error updating project S3 path: {e}")
+            return False
+        
     def assign_project_images(self, project_id: int, s3_images_folder: str, user_id: int) -> bool:
         """Assign company images folder to project."""
         try:

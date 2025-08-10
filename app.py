@@ -259,6 +259,9 @@ def create_project():
         
         # Update S3 data path with real project ID
         real_s3_path = S3PathHelper.get_project_prefix(g.current_user.user_id, created_project.project_id)
+        
+        # Update the s3_data_path in the database with the real project ID
+        db_manager.update_project_s3_path(created_project.project_id, real_s3_path)
         created_project.s3_data_path = real_s3_path
         
         # Log project creation
