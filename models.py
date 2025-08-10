@@ -242,6 +242,10 @@ class Project:
         # Include owner_username if available
         if hasattr(self, 'owner_username') and self.owner_username:
             result['owner_username'] = self.owner_username
+        
+        # Include permission_level if available
+        if hasattr(self, 'permission_level') and self.permission_level:
+            result['permission_level'] = self.permission_level
             
         return result
     

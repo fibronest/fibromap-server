@@ -354,6 +354,7 @@ class DatabaseManager:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
                     # Get projects where user is owner OR has explicit permissions
+                    # Also include the permission level
                     cursor.execute("""
                         SELECT DISTINCT 
                             p.project_id, 
@@ -365,13 +366,17 @@ class DatabaseManager:
                             p.last_modified_by,
                             p.version_count,
                             p.s3_data_path,
-                            p.s3_images_folder
+                            p.s3_images_folder,
+                            CASE 
+                                WHEN p.owner_id = %s THEN 'owner'
+                                ELSE pp.permission_level
+                            END as permission_level
                         FROM projects p
-                        LEFT JOIN project_permissions pp ON p.project_id = pp.project_id
+                        LEFT JOIN project_permissions pp ON p.project_id = pp.project_id AND pp.user_id = %s
                         WHERE p.is_active = true 
                         AND (p.owner_id = %s OR pp.user_id = %s)
                         ORDER BY p.updated_at DESC
-                    """, (user_id, user_id))
+                    """, (user_id, user_id, user_id, user_id))
                     
                     projects = []
                     for row in cursor.fetchall():
@@ -387,6 +392,8 @@ class DatabaseManager:
                             s3_data_path=row[8],
                             s3_images_folder=row[9]
                         )
+                        # Add permission_level as an attribute
+                        project.permission_level = row[10]
                         projects.append(project)
                     
                     return projects
