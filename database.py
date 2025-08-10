@@ -382,6 +382,9 @@ class DatabaseManager:
                     
                     projects = []
                     for row in cursor.fetchall():
+                        # Debug logging
+                        logger.info(f"Project {row[0]} ({row[1]}): owner_id={row[3]}, owner_username={row[11]}, permission={row[10]}")
+                        
                         project = Project(
                             project_id=row[0],
                             project_name=row[1],
@@ -397,14 +400,21 @@ class DatabaseManager:
                         # Add permission_level and owner_username as attributes
                         project.permission_level = row[10]
                         project.owner_username = row[11]
+                        
+                        # More debug logging
+                        logger.info(f"Set on project object: owner_username={project.owner_username}, permission={project.permission_level}")
+                        
                         projects.append(project)
                     
+                    logger.info(f"Returning {len(projects)} projects for user {user_id}")
                     return projects
                     
         except Exception as e:
             logger.error(f"Error getting user projects: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
-        
+    
     def update_project(self, project_id: int, updated_at: datetime, last_modified_by: int, version_count: int = None) -> bool:
         """Update project metadata after save."""
         try:
