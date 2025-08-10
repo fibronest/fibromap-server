@@ -328,50 +328,111 @@ class ProjectPermission:
 class AuditLog:
     """Audit log model for tracking actions."""
     
-    def __init__(self, user_id: int, action: str, project_id: int = None,
-                 details: Dict[str, Any] = None, ip_address: str = None, success: bool = True):
+    def __init__(self, log_id: int = None, user_id: int = None, action: str = None, 
+                 project_id: int = None, details: Dict[str, Any] = None, 
+                 timestamp: datetime = None, ip_address: str = None, success: bool = True):
+        self.log_id = log_id
         self.user_id = user_id
         self.action = action
         self.project_id = project_id
         self.details = details or {}
+        self.timestamp = timestamp or datetime.now()
         self.ip_address = ip_address
         self.success = success
-        self.timestamp = datetime.now()
+        self.username = None  # For JOIN results
+        self.project_name = None  # For JOIN results
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert audit log to dictionary for JSON serialization."""
-        return {
+        result = {
+            'log_id': self.log_id,
             'user_id': self.user_id,
             'action': self.action,
             'project_id': self.project_id,
             'details': self.details,
+            'timestamp': self.timestamp.isoformat() if self.timestamp else None,
             'ip_address': self.ip_address,
-            'success': self.success,
-            'timestamp': self.timestamp.isoformat()
+            'success': self.success
         }
-
+        
+        # Include username and project_name if available
+        if hasattr(self, 'username') and self.username:
+            result['username'] = self.username
+        if hasattr(self, 'project_name') and self.project_name:
+            result['project_name'] = self.project_name
+            
+        return result
+    
+    @classmethod
+    def from_db_row(cls, row: tuple) -> 'AuditLog':
+        """Create AuditLog instance from database row."""
+        # Parse details from JSONB if it's a string
+        details = row[4]
+        if isinstance(details, str):
+            import json
+            try:
+                details = json.loads(details)
+            except:
+                details = {'raw': details}
+        
+        log = cls(
+            log_id=row[0],
+            user_id=row[1],
+            action=row[2],
+            project_id=row[3],
+            details=details,
+            timestamp=row[5],
+            ip_address=row[6],
+            success=row[7] if len(row) > 7 else True
+        )
+        
+        # If username and project_name are included (from JOINs)
+        if len(row) > 8:
+            log.username = row[8]
+        if len(row) > 9:
+            log.project_name = row[9]
+            
+        return log
 
 class S3Version:
     """S3 version model for tracking version backups."""
     
-    def __init__(self, project_id: int, version_name: str, s3_path: str,
-                 created_by: int, is_overwritten: bool = False, cleanup_after: datetime = None):
+    def __init__(self, version_id: int = None, project_id: int = None, 
+                 version_name: str = None, s3_path: str = None,
+                 created_by: int = None, created_at: datetime = None,
+                 is_overwritten: bool = False, cleanup_after: datetime = None):
+        self.version_id = version_id
         self.project_id = project_id
         self.version_name = version_name
         self.s3_path = s3_path
         self.created_by = created_by
-        self.created_at = datetime.now()
+        self.created_at = created_at or datetime.now()
         self.is_overwritten = is_overwritten
         self.cleanup_after = cleanup_after or (datetime.now() + timedelta(hours=48))
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert S3 version to dictionary for JSON serialization."""
         return {
+            'version_id': self.version_id,
             'project_id': self.project_id,
             'version_name': self.version_name,
             's3_path': self.s3_path,
             'created_by': self.created_by,
-            'created_at': self.created_at.isoformat(),
+            'created_at': self.created_at.isoformat() if self.created_at else None,
             'is_overwritten': self.is_overwritten,
             'cleanup_after': self.cleanup_after.isoformat() if self.cleanup_after else None
         }
+    
+    @classmethod
+    def from_db_row(cls, row: tuple) -> 'S3Version':
+        """Create S3Version instance from database row."""
+        return cls(
+            version_id=row[0],
+            project_id=row[1],
+            version_name=row[2],
+            s3_path=row[3],
+            created_by=row[4],
+            created_at=row[5],
+            is_overwritten=row[6] if len(row) > 6 else False,
+            cleanup_after=row[7] if len(row) > 7 else None
+        )
