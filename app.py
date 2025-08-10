@@ -518,8 +518,8 @@ def modify_project_permission(project_id, user_id):
         if permission_level not in valid_levels:
             return jsonify({'error': f'Invalid permission level. Must be one of: {valid_levels}'}), 400
         
-        # Get current user (admin)
-        current_user = auth_manager.current_user
+        # Get current user (admin) - CHANGED FROM auth_manager.current_user
+        current_user = g.current_user
         if not current_user:
             return jsonify({'error': 'Could not identify current user'}), 401
         
@@ -557,8 +557,8 @@ def modify_project_permission(project_id, user_id):
 def revoke_project_permission(project_id, user_id):
     """Revoke a user's permission for a project (admin only)."""
     try:
-        # Get current user (admin)
-        current_user = auth_manager.current_user
+        # Get current user (admin) - CHANGED FROM auth_manager.current_user
+        current_user = g.current_user
         if not current_user:
             return jsonify({'error': 'Could not identify current user'}), 401
         
@@ -585,7 +585,7 @@ def revoke_project_permission(project_id, user_id):
     except Exception as e:
         logger.error(f"Failed to revoke permission: {e}")
         return jsonify({'error': 'Failed to revoke permission'}), 500
-
+    
 @app.route('/api/admin/projects', methods=['GET'])
 @require_admin
 def get_all_projects():
