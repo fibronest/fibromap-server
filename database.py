@@ -135,6 +135,36 @@ class DatabaseManager:
             logger.error(traceback.format_exc())
             return None
     
+    def delete_user(self, user_id: int) -> bool:
+        """Delete a user and cascade delete their sessions and permissions."""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Delete user (cascade will handle sessions and permissions)
+                    cursor.execute(
+                        "DELETE FROM users WHERE user_id = %s",
+                        (user_id,)
+                    )
+                    conn.commit()
+                    return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Failed to delete user: {e}")
+            return False
+
+    def count_admins(self) -> int:
+        """Count the number of admin users."""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM users WHERE role = 'admin' AND is_active = true"
+                    )
+                    result = cursor.fetchone()
+                    return result[0] if result else 0
+        except Exception as e:
+            logger.error(f"Failed to count admins: {e}")
+            return 0
+        
     def get_user_by_username(self, username: str) -> Optional[User]:
         """Get user by username or email."""
         try:

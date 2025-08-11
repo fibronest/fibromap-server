@@ -440,7 +440,61 @@ def reset_user_password(user_id):
         logger.error(f"Reset password error: {e}")
         return jsonify({'error': 'Failed to reset password'}), 500
 
-
+@app.route('/api/admin/users/<int:user_id>', methods=['DELETE'])
+@require_admin
+def delete_user(user_id):
+    """Delete a user and all their owned projects (admin only)."""
+    try:
+        # Get the user to delete
+        user = db_manager.get_user_by_id(user_id)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Prevent admin from deleting themselves
+        if user.user_id == g.current_user.user_id:
+            return jsonify({'error': 'Cannot delete your own account'}), 400
+        
+        # Prevent deleting the last admin
+        if user.role == 'admin':
+            admin_count = db_manager.count_admins()
+            if admin_count <= 1:
+                return jsonify({'error': 'Cannot delete the last admin account'}), 400
+        
+        # Get all projects owned by this user
+        owned_projects = db_manager.get_user_projects(user.user_id)
+        owned_project_info = [(p.project_id, p.project_name) for p in owned_projects if p.owner_id == user.user_id]
+        
+        # Delete all owned projects from database (will cascade delete permissions)
+        deleted_projects = []
+        for project_id, project_name in owned_project_info:
+            if db_manager.delete_project(project_id):
+                deleted_projects.append({'id': project_id, 'name': project_name})
+                logger.info(f"Deleted project {project_id} ({project_name}) owned by user {user.username}")
+        
+        # Delete the user (will cascade delete permissions and sessions)
+        success = db_manager.delete_user(user_id)
+        
+        if success:
+            # Log the deletion
+            db_manager.create_audit_log(
+                user_id=g.current_user.user_id,
+                action='delete_user',
+                details=f'Deleted user: {user.username} (ID: {user_id}) and {len(deleted_projects)} owned projects',
+                ip_address=get_client_ip()
+            )
+            
+            return jsonify({
+                'message': f'User {user.username} deleted successfully',
+                'user_id': user_id,
+                'projects_deleted': deleted_projects
+            })
+        else:
+            return jsonify({'error': 'Failed to delete user'}), 500
+            
+    except Exception as e:
+        logger.error(f"Delete user error: {e}")
+        return jsonify({'error': 'Failed to delete user'}), 500
+        
 @app.route('/api/admin/users/<int:user_id>/status', methods=['PUT'])
 @require_admin
 def toggle_user_status(user_id):
