@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 import logging
 from typing import Dict, Any, Optional
-
+import json
 from auth import AuthenticationManager
 from database import db_manager
 from s3_manager import s3_manager, S3PathHelper
@@ -336,13 +336,14 @@ def get_project(project_id):
             return jsonify({'error': 'Project not found'}), 404
         
         # Check if user has access to this project
-        permission = db_manager.get_user_project_permission(project_id, g.current_user.user_id)
-        if not permission and project.owner_id != g.current_user.user_id:
-            return jsonify({'error': 'Access denied'}), 403
+        if g.current_user.role != 'admin':
+            permission = db_manager.get_user_project_permission(project_id, g.current_user.user_id)
+            if not permission and project.owner_id != g.current_user.user_id:
+                return jsonify({'error': 'Access denied'}), 403
         
         return jsonify({
-            'project': project.to_dict(),
-            'permission_level': permission or 'admin'  # Owner gets admin
+            'project': project.to_dict(),  # This should include owner_id
+            'permission_level': 'admin' if g.current_user.role == 'admin' else permission
         })
         
     except Exception as e:
@@ -418,28 +419,89 @@ def admin_create_user():
         logger.error(f"Create user error: {e}")
         return jsonify({'error': f'Failed to create user: {str(e)}'}), 500
 
-@app.route('/api/admin/users/<int:user_id>/reset-password', methods=['POST'])
+@app.route('/api/admin/users', methods=['POST'])
 @require_admin
-def reset_user_password(user_id):
-    """Reset user password (admin only)."""
+def admin_create_user():
+    """Create new user (admin only)."""
     try:
         data = request.get_json()
-        new_password = data.get('new_password', '')
         
-        if not new_password:
-            return jsonify({'error': 'New password is required'}), 400
+        if not data:
+            return jsonify({'error': 'JSON data required'}), 400
         
-        success, message = auth_manager.admin_reset_password(user_id, new_password, g.current_user.user_id)
+        username = data.get('username', '').strip()
+        email = data.get('email', '').strip()
+        password = data.get('password', '')
+        role = data.get('role', 'user')
+        
+        if not all([username, email, password]):
+            return jsonify({'error': 'Username, email, and password are required'}), 400
+        
+        # Create user without role parameter (register_user doesn't accept it)
+        success, message, user = auth_manager.register_user(
+            username, email, password, get_client_ip()
+        )
         
         if not success:
             return jsonify({'error': message}), 400
         
-        return jsonify({'message': 'Password reset successfully'})
+        # If admin role requested, update it after creation
+        if success and role == 'admin':
+            try:
+                with db_manager.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE users SET role = %s WHERE user_id = %s
+                    """, ('admin', user.user_id))
+                    conn.commit()
+                    user.role = 'admin'
+                    logger.info(f"Updated user {username} to admin role")
+            except Exception as e:
+                logger.error(f"Failed to update user role: {e}")
+                # User was created but role update failed - still log and return user
+                db_manager.create_audit_log(
+                    user_id=g.current_user.user_id,
+                    action='create_user',
+                    details=json.dumps({
+                        'created_user': username,
+                        'created_user_id': user.user_id,
+                        'role': 'user',  # Role update failed
+                        'role_update_failed': True,
+                        'created_by': g.current_user.username
+                    }),
+                    ip_address=get_client_ip()
+                )
+                return jsonify({
+                    'message': 'User created but role update failed',
+                    'user': user.to_dict()
+                }), 201
+        
+        # Log successful user creation
+        db_manager.create_audit_log(
+            user_id=g.current_user.user_id,
+            action='create_user',
+            details=json.dumps({
+                'created_user': username,
+                'created_user_id': user.user_id,
+                'role': role,
+                'created_by': g.current_user.username,
+                'note': 'S3 folder creation handled by client'
+            }),
+            ip_address=get_client_ip()
+        )
+        
+        logger.info(f"Admin {g.current_user.username} created user {username} with role {role}")
+        
+        # Return the complete user data including user_id
+        return jsonify({
+            'message': 'User created successfully',
+            'user': user.to_dict()  # This includes user_id needed for S3 folder creation
+        }), 201
         
     except Exception as e:
-        logger.error(f"Reset password error: {e}")
-        return jsonify({'error': 'Failed to reset password'}), 500
-
+        logger.error(f"Create user error: {e}")
+        return jsonify({'error': f'Failed to create user: {str(e)}'}), 500
+    
 @app.route('/api/admin/users/<int:user_id>', methods=['DELETE'])
 @require_admin
 def delete_user(user_id):
@@ -461,40 +523,142 @@ def delete_user(user_id):
                 return jsonify({'error': 'Cannot delete the last admin account'}), 400
         
         # Get all projects owned by this user
-        owned_projects = db_manager.get_user_projects(user.user_id)
-        owned_project_info = [(p.project_id, p.project_name) for p in owned_projects if p.owner_id == user.user_id]
+        try:
+            owned_projects = db_manager.get_user_projects(user.user_id)
+            owned_project_info = [
+                {'id': p.project_id, 'name': p.project_name} 
+                for p in owned_projects 
+                if p.owner_id == user.user_id
+            ]
+        except Exception as e:
+            logger.error(f"Error getting user projects: {e}")
+            owned_project_info = []
         
         # Delete all owned projects from database (will cascade delete permissions)
         deleted_projects = []
-        for project_id, project_name in owned_project_info:
-            if db_manager.delete_project(project_id):
-                deleted_projects.append({'id': project_id, 'name': project_name})
-                logger.info(f"Deleted project {project_id} ({project_name}) owned by user {user.username}")
+        failed_projects = []
+        
+        for project_info in owned_project_info:
+            try:
+                if db_manager.delete_project(project_info['id']):
+                    deleted_projects.append(project_info)
+                    logger.info(f"Deleted project {project_info['id']} ({project_info['name']}) owned by user {user.username}")
+                else:
+                    failed_projects.append(project_info)
+                    logger.error(f"Failed to delete project {project_info['id']} ({project_info['name']})")
+            except Exception as e:
+                logger.error(f"Failed to delete project {project_info['id']}: {e}")
+                failed_projects.append(project_info)
         
         # Delete the user (will cascade delete permissions and sessions)
-        success = db_manager.delete_user(user_id)
-        
-        if success:
-            # Log the deletion
+        try:
+            success = db_manager.delete_user(user_id)
+        except Exception as e:
+            logger.error(f"Database error deleting user {user_id}: {e}")
+            
+            # Log the partial failure
             db_manager.create_audit_log(
                 user_id=g.current_user.user_id,
-                action='delete_user',
-                details=f'Deleted user: {user.username} (ID: {user_id}) and {len(deleted_projects)} owned projects',
+                action='delete_user_failed',
+                details=json.dumps({
+                    'attempted_delete_user': user.username,
+                    'attempted_delete_user_id': user_id,
+                    'projects_deleted': len(deleted_projects),
+                    'deleted_projects': [p['name'] for p in deleted_projects],
+                    'error': str(e),
+                    'deleted_by': g.current_user.username
+                }),
+                ip_address=get_client_ip()
+            )
+            
+            return jsonify({'error': f'Database error: {str(e)}'}), 500
+        
+        if success:
+            # Log the successful deletion with full details
+            audit_details = {
+                'deleted_user': user.username,
+                'deleted_user_id': user_id,
+                'deleted_user_role': user.role,
+                'deleted_user_email': user.email,
+                'projects_deleted': len(deleted_projects),
+                'deleted_project_names': [p['name'] for p in deleted_projects],
+                'deleted_project_ids': [p['id'] for p in deleted_projects],
+                'deleted_by': g.current_user.username,
+                'deleted_by_id': g.current_user.user_id,
+                'note': 'S3 folder deletion handled by client'
+            }
+            
+            if failed_projects:
+                audit_details['failed_project_deletions'] = [p['name'] for p in failed_projects]
+            
+            try:
+                db_manager.create_audit_log(
+                    user_id=g.current_user.user_id,
+                    action='delete_user',
+                    details=json.dumps(audit_details),
+                    ip_address=get_client_ip()
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create audit log for user deletion: {e}")
+            
+            logger.info(f"Admin {g.current_user.username} deleted user {user.username} (ID: {user_id}) and {len(deleted_projects)} projects")
+            
+            response_data = {
+                'message': f'User {user.username} deleted successfully',
+                'user_id': user_id,
+                'projects_deleted': deleted_projects
+            }
+            
+            if failed_projects:
+                response_data['warning'] = f'Failed to delete {len(failed_projects)} projects'
+                response_data['failed_projects'] = failed_projects
+            
+            return jsonify(response_data)
+        else:
+            # User deletion failed but some projects might have been deleted
+            logger.error(f"Failed to delete user {user.username} from database")
+            
+            # Log the failure
+            db_manager.create_audit_log(
+                user_id=g.current_user.user_id,
+                action='delete_user_failed',
+                details=json.dumps({
+                    'attempted_delete_user': user.username,
+                    'attempted_delete_user_id': user_id,
+                    'projects_deleted': len(deleted_projects),
+                    'deleted_projects': [p['name'] for p in deleted_projects],
+                    'deleted_by': g.current_user.username,
+                    'error': 'User deletion failed after project deletion'
+                }),
                 ip_address=get_client_ip()
             )
             
             return jsonify({
-                'message': f'User {user.username} deleted successfully',
-                'user_id': user_id,
-                'projects_deleted': deleted_projects
-            })
-        else:
-            return jsonify({'error': 'Failed to delete user'}), 500
+                'error': 'Failed to delete user from database',
+                'partial_deletion': True,
+                'projects_deleted': len(deleted_projects)
+            }), 500
             
     except Exception as e:
         logger.error(f"Delete user error: {e}")
-        return jsonify({'error': 'Failed to delete user'}), 500
         
+        # Try to log the error
+        try:
+            db_manager.create_audit_log(
+                user_id=g.current_user.user_id,
+                action='delete_user_error',
+                details=json.dumps({
+                    'attempted_delete_user_id': user_id,
+                    'error': str(e),
+                    'deleted_by': g.current_user.username
+                }),
+                ip_address=get_client_ip()
+            )
+        except:
+            pass  # Don't fail if audit log fails
+        
+        return jsonify({'error': f'Server error: {str(e)}'}), 500
+          
 @app.route('/api/admin/users/<int:user_id>/status', methods=['PUT'])
 @require_admin
 def toggle_user_status(user_id):
