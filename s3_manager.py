@@ -105,7 +105,7 @@ class S3CredentialManager:
                 logger.error(f"Failed to create AWS clients: {e}")
         else:
             logger.error("Cannot create AWS clients - missing credentials")
-            
+
     def generate_user_credentials(self, user: User, user_projects: List[Project] = None, 
                                 ip_address: str = None) -> Dict[str, Any]:
         """
@@ -123,78 +123,293 @@ class S3CredentialManager:
             # Generate data bucket credentials only (skip images for now)
             data_credentials = self._generate_data_bucket_credentials(user)
             
-            # Log credential generation
-            self._log_credential_generation(user.user_id, ip_address, success=True)
-            
-            result = {
-                'data_bucket': data_credentials,
-                'region': self.aws_region,
-                'expires_at': (datetime.now() + timedelta(hours=self.credential_duration_hours)).isoformat()
-            }
-            
-            # Skip images bucket for now
-            # images_credentials = self._generate_images_bucket_credentials(user, user_projects)
-            # if images_credentials:
-            #     result['images_bucket'] = images_credentials
-            
-            return result
-            
+            # Check if credential generation was successful
+            if data_credentials.get('access_key_id'):
+                # Log successful credential generation
+                self._log_credential_generation(user.user_id, ip_address, success=True)
+                
+                result = {
+                    'data_bucket': data_credentials,
+                    'region': self.aws_region,
+                    'expires_at': data_credentials.get('expiration', 
+                        (datetime.now() + timedelta(hours=self.credential_duration_hours)).isoformat())
+                }
+                
+                # Skip images bucket for now
+                # images_credentials = self._generate_images_bucket_credentials(user, user_projects)
+                # if images_credentials:
+                #     result['images_bucket'] = images_credentials
+                
+                return result
+            else:
+                # Credential generation failed
+                error_msg = data_credentials.get('error', 'Unknown error')
+                logger.error(f"Failed to generate credentials: {error_msg}")
+                self._log_credential_generation(user.user_id, ip_address, success=False, 
+                                            error=error_msg)
+                
+                # Return error response (no fallback to raw credentials for security)
+                return {
+                    'data_bucket': data_credentials,  # This contains the error message
+                    'region': self.aws_region,
+                    'expires_at': None
+                }
+                
         except Exception as e:
             logger.error(f"Error generating user credentials: {e}")
             self._log_credential_generation(user.user_id, ip_address, success=False, 
                                         error=str(e))
-            # Return basic credentials as fallback
+            
+            # Return error response (no raw credentials for security)
             return {
                 'data_bucket': {
-                    'bucket_name': self.data_bucket,
-                    'access_key_id': os.getenv('AWS_ACCESS_KEY_ID'),
-                    'secret_access_key': os.getenv('AWS_SECRET_ACCESS_KEY'),
-                    'region': self.aws_region
-                },
-                'region': self.aws_region,
-                'expires_at': (datetime.now() + timedelta(hours=12)).isoformat()
-            }
-        
-    def _generate_data_bucket_credentials(self, user: User) -> Dict[str, Any]:
-        """Generate temporary credentials for the data bucket."""
-        try:
-            # Check if we have credentials
-            if not self.aws_access_key or not self.aws_secret_key:
-                error_msg = f"AWS credentials not configured. Access key: {bool(self.aws_access_key)}, Secret key: {bool(self.aws_secret_key)}"
-                logger.error(error_msg)
-                return {
                     'bucket_name': self.data_bucket,
                     'access_key_id': None,
                     'secret_access_key': None,
                     'region': self.aws_region,
-                    'error': 'AWS credentials not configured on server'
-                }
-            
-            # If we have a role ARN, try to use STS
-            if self.aws_role_arn and self.sts_client:
-                logger.info(f"Attempting STS role assumption for user {user.username}")
-                # ... rest of STS code ...
-            
-            # Fallback: Return direct credentials
-            logger.info(f"Using direct credentials for user {user.username}")
-            return {
-                'bucket_name': self.data_bucket,
-                'access_key_id': self.aws_access_key,
-                'secret_access_key': self.aws_secret_key,
+                    'error': f'Failed to generate credentials: {str(e)}'
+                },
                 'region': self.aws_region,
-                'user_prefix': f"users/user_{user.user_id:03d}"
+                'expires_at': None
             }
+                
+    def _generate_data_bucket_credentials(self, user: User) -> Dict[str, Any]:
+        """Generate temporary credentials for the data bucket."""
+        try:
+            # Read credentials fresh from environment
+            aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
+            aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+            aws_region = os.getenv('AWS_REGION', 'us-east-1')
+            aws_role_arn = os.getenv('AWS_ROLE_ARN')
+            aws_external_id = os.getenv('AWS_EXTERNAL_ID', 'fibromap-2024')
             
+            # Validate required credentials
+            if not aws_access_key or not aws_secret_key:
+                logger.error("AWS credentials not configured")
+                return self._create_error_response(aws_region, 'AWS credentials not configured on server')
+            
+            if not aws_role_arn:
+                logger.error("AWS_ROLE_ARN not configured - cannot use STS")
+                return self._create_error_response(aws_region, 'AWS_ROLE_ARN not configured - STS not available')
+            
+            # Initialize STS client if needed
+            if not self.sts_client:
+                sts_client = self._initialize_sts_client(aws_access_key, aws_secret_key, aws_region)
+                if not sts_client:
+                    return self._create_error_response(aws_region, 'Failed to initialize STS client')
+                self.sts_client = sts_client
+            
+            # Generate credentials based on user role
+            if user.role == 'admin':
+                return self._generate_admin_credentials(user, aws_role_arn, aws_external_id, aws_region)
+            else:
+                return self._generate_user_credentials(user, aws_role_arn, aws_external_id, aws_region)
+                
         except Exception as e:
             logger.error(f"Error generating credentials: {e}")
-            return {
-                'bucket_name': self.data_bucket,
-                'access_key_id': None,
-                'secret_access_key': None,
-                'region': self.aws_region,
-                'error': str(e)
-            }
-      
+            import traceback
+            logger.error(traceback.format_exc())
+            return self._create_error_response(
+                os.getenv('AWS_REGION', 'us-east-1'), 
+                f'Unexpected error: {str(e)}'
+            )
+
+    def _initialize_sts_client(self, access_key: str, secret_key: str, region: str):
+        """Initialize the STS client."""
+        try:
+            client = boto3.client(
+                'sts',
+                aws_access_key_id=access_key,
+                aws_secret_access_key=secret_key,
+                region_name=region
+            )
+            logger.info("STS client created successfully")
+            return client
+        except Exception as e:
+            logger.error(f"Failed to create STS client: {e}")
+            return None
+
+    def _create_error_response(self, region: str, error_message: str) -> Dict[str, Any]:
+        """Create a standardized error response."""
+        return {
+            'bucket_name': self.data_bucket,
+            'access_key_id': None,
+            'secret_access_key': None,
+            'region': region,
+            'error': error_message
+        }
+
+    def _create_admin_policy(self) -> Dict[str, Any]:
+        """Create IAM policy for admin users with full bucket access."""
+        return {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:ListBucket",
+                        "s3:GetBucketLocation",
+                        "s3:ListBucketVersions"
+                    ],
+                    "Resource": f"arn:aws:s3:::{self.data_bucket}"
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:GetObject",
+                        "s3:PutObject",
+                        "s3:DeleteObject",
+                        "s3:GetObjectVersion",
+                        "s3:DeleteObjectVersion",
+                        "s3:GetObjectAcl",
+                        "s3:PutObjectAcl"
+                    ],
+                    "Resource": f"arn:aws:s3:::{self.data_bucket}/*"
+                }
+            ]
+        }
+
+    def _create_user_policy(self, user_prefix: str, shared_prefixes: List[str] = None) -> Dict[str, Any]:
+        """
+        Create IAM policy for regular users with restricted access.
+        
+        Args:
+            user_prefix: The user's own folder prefix
+            shared_prefixes: List of additional prefixes the user has access to (for shared projects)
+        """
+        # Start with the user's own folder
+        allowed_prefixes = [f"{user_prefix}/*"]
+        allowed_resources = [f"arn:aws:s3:::{self.data_bucket}/{user_prefix}/*"]
+        
+        # Add shared project folders if any
+        if shared_prefixes:
+            for prefix in shared_prefixes:
+                allowed_prefixes.append(f"{prefix}/*")
+                allowed_resources.append(f"arn:aws:s3:::{self.data_bucket}/{prefix}/*")
+        
+        return {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:ListBucket"
+                    ],
+                    "Resource": f"arn:aws:s3:::{self.data_bucket}",
+                    "Condition": {
+                        "StringLike": {
+                            "s3:prefix": allowed_prefixes
+                        }
+                    }
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:GetObject",
+                        "s3:PutObject",
+                        "s3:DeleteObject"
+                    ],
+                    "Resource": allowed_resources
+                }
+            ]
+        }
+
+    def _assume_role_with_policy(self, role_arn: str, session_name: str, policy: Dict[str, Any], 
+                                external_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Assume an IAM role with a specific policy.
+        
+        Returns:
+            Dictionary with credentials or None if failed
+        """
+        try:
+            logger.info(f"Attempting to assume role: {role_arn}")
+            logger.info(f"Session name: {session_name}")
+            
+            response = self.sts_client.assume_role(
+                RoleArn=role_arn,
+                RoleSessionName=session_name,
+                Policy=json.dumps(policy),
+                DurationSeconds=self.credential_duration_hours * 3600,
+                ExternalId=external_id
+            )
+            
+            return response['Credentials']
+            
+        except Exception as e:
+            logger.error(f"STS assume role failed: {e}")
+            return None
+
+    def _generate_admin_credentials(self, user: User, role_arn: str, external_id: str, 
+                                region: str) -> Dict[str, Any]:
+        """Generate STS credentials for admin users with full bucket access."""
+        logger.info(f"Generating admin credentials for user {user.username}")
+        
+        # Create admin policy
+        policy = self._create_admin_policy()
+        
+        # Generate session name
+        session_name = f"fibromap-admin-{user.user_id}-{int(datetime.now().timestamp())}"
+        
+        # Assume role with admin policy
+        credentials = self._assume_role_with_policy(role_arn, session_name, policy, external_id)
+        
+        if not credentials:
+            return self._create_error_response(region, 'Failed to assume role for admin user')
+        
+        logger.info(f"Successfully generated admin STS credentials for {user.username}")
+        
+        return {
+            'bucket_name': self.data_bucket,
+            'access_key_id': credentials['AccessKeyId'],
+            'secret_access_key': credentials['SecretAccessKey'],
+            'session_token': credentials['SessionToken'],
+            'region': region,
+            'user_prefix': f"users/user_{user.user_id:03d}",
+            'expiration': credentials['Expiration'].isoformat(),
+            'credential_type': 'sts',
+            'user_role': 'admin',
+            'access_level': 'full_bucket'
+        }
+
+    def _generate_user_credentials(self, user: User, role_arn: str, external_id: str, 
+                                region: str) -> Dict[str, Any]:
+        """Generate STS credentials for regular users with restricted access."""
+        logger.info(f"Generating user credentials for user {user.username}")
+        
+        user_prefix = f"users/user_{user.user_id:03d}"
+        
+        # TODO: In the future, fetch shared project prefixes from database
+        # For now, just give access to user's own folder
+        shared_prefixes = None
+        
+        # Create user policy with restrictions
+        policy = self._create_user_policy(user_prefix, shared_prefixes)
+        
+        # Generate session name
+        session_name = f"fibromap-user-{user.user_id}-{int(datetime.now().timestamp())}"
+        
+        # Assume role with user policy
+        credentials = self._assume_role_with_policy(role_arn, session_name, policy, external_id)
+        
+        if not credentials:
+            return self._create_error_response(region, 'Failed to assume role for user')
+        
+        logger.info(f"Successfully generated restricted STS credentials for {user.username}")
+        
+        return {
+            'bucket_name': self.data_bucket,
+            'access_key_id': credentials['AccessKeyId'],
+            'secret_access_key': credentials['SecretAccessKey'],
+            'session_token': credentials['SessionToken'],
+            'region': region,
+            'user_prefix': user_prefix,
+            'expiration': credentials['Expiration'].isoformat(),
+            'credential_type': 'sts',
+            'user_role': 'user',
+            'access_level': 'restricted',
+            'accessible_prefixes': [user_prefix] + (shared_prefixes or [])
+        }
     def _generate_images_bucket_credentials(self, user: User, projects: List[Project]) -> Optional[Dict[str, Any]]:
         """
         Generate temporary credentials for company images bucket access.
