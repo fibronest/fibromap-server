@@ -965,6 +965,38 @@ def internal_error(error):
     logger.error(f"Internal server error: {error}")
     return jsonify({'error': 'Internal server error'}), 500
 
+# Debug endpoint (TEMPORARY - REMOVE IN PRODUCTION)
+@app.route('/api/debug/env', methods=['GET'])
+def debug_environment():
+    """Debug endpoint to check environment variables."""
+    import sys
+    
+    # Check for a simple auth to prevent public access
+    auth_header = request.headers.get('X-Debug-Token')
+    if auth_header != 'debug-fibromap-2024':
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    env_vars = {
+        'AWS_ACCESS_KEY_ID': os.getenv('AWS_ACCESS_KEY_ID'),
+        'AWS_SECRET_ACCESS_KEY': '***hidden***' if os.getenv('AWS_SECRET_ACCESS_KEY') else None,
+        'AWS_REGION': os.getenv('AWS_REGION'),
+        'AWS_DEFAULT_REGION': os.getenv('AWS_DEFAULT_REGION'),
+        'AWS_ROLE_ARN': os.getenv('AWS_ROLE_ARN'),
+        'AWS_EXTERNAL_ID': os.getenv('AWS_EXTERNAL_ID'),
+        'S3_BUCKET': os.getenv('S3_BUCKET'),
+        'AWS_DATA_BUCKET': os.getenv('AWS_DATA_BUCKET'),
+        'DATABASE_URL': '***hidden***' if os.getenv('DATABASE_URL') else None,
+        
+        # Check all environment variables (names only)
+        'all_env_vars': list(os.environ.keys())
+    }
+    
+    return jsonify({
+        'message': 'Environment variables check',
+        'env_vars': env_vars,
+        'python_version': sys.version,
+        'current_time': datetime.now().isoformat()
+    })
 
 @app.errorhandler(Exception)
 def handle_exception(e):
