@@ -976,16 +976,27 @@ def debug_environment():
     if auth_header != 'debug-fibromap-2024':
         return jsonify({'error': 'Unauthorized'}), 401
     
+    # Get actual values to verify they exist
+    actual_access_key = os.getenv('AWS_ACCESS_KEY_ID')
+    actual_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+    actual_region = os.getenv('AWS_REGION')
+    actual_bucket = os.getenv('S3_BUCKET')
+    
     env_vars = {
-        'AWS_ACCESS_KEY_ID': os.getenv('AWS_ACCESS_KEY_ID'),
-        'AWS_SECRET_ACCESS_KEY': '***hidden***' if os.getenv('AWS_SECRET_ACCESS_KEY') else None,
-        'AWS_REGION': os.getenv('AWS_REGION'),
+        'AWS_ACCESS_KEY_ID': actual_access_key[:10] + '...' if actual_access_key else None,
+        'AWS_SECRET_ACCESS_KEY': '***exists***' if actual_secret_key else None,
+        'AWS_REGION': actual_region,
         'AWS_DEFAULT_REGION': os.getenv('AWS_DEFAULT_REGION'),
         'AWS_ROLE_ARN': os.getenv('AWS_ROLE_ARN'),
         'AWS_EXTERNAL_ID': os.getenv('AWS_EXTERNAL_ID'),
-        'S3_BUCKET': os.getenv('S3_BUCKET'),
+        'S3_BUCKET': actual_bucket,
         'AWS_DATA_BUCKET': os.getenv('AWS_DATA_BUCKET'),
         'DATABASE_URL': '***hidden***' if os.getenv('DATABASE_URL') else None,
+        
+        # Debug: show raw environment check
+        'DEBUG_ACCESS_KEY_EXISTS': bool(actual_access_key),
+        'DEBUG_SECRET_KEY_EXISTS': bool(actual_secret_key),
+        'DEBUG_ACCESS_KEY_LENGTH': len(actual_access_key) if actual_access_key else 0,
         
         # Check all environment variables (names only)
         'all_env_vars': list(os.environ.keys())
