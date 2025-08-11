@@ -117,19 +117,22 @@ class DatabaseManager:
                     cursor.execute("""
                         INSERT INTO users (username, email, password_hash, role)
                         VALUES (%s, %s, %s, %s)
-                        RETURNING user_id, username, email, role, is_active, created_at, last_login
+                        RETURNING user_id, username, email, password_hash, role, is_active, 
+                                created_at, last_login, failed_attempts, locked_until
                     """, (username, email, password_hash, role))
                     
                     row = cursor.fetchone()
                     conn.commit()
                     
                     return User.from_db_row(row) if row else None
-                    
+                        
         except psycopg2.IntegrityError as e:
             logger.warning(f"User creation failed - duplicate username/email: {e}")
             return None
         except Exception as e:
             logger.error(f"Error creating user: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     def get_user_by_username(self, username: str) -> Optional[User]:
