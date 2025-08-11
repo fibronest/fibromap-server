@@ -70,6 +70,7 @@ class S3CredentialManager:
         print(f"  Access Key found: {bool(self.aws_access_key)}")
         print(f"  Secret Key found: {bool(self.aws_secret_key)}")
         print(f"  Role ARN: {self.aws_role_arn}")
+        print(f"  External ID: {self.aws_external_id}")
         print("="*60)
         
         if not self.aws_access_key:
@@ -84,15 +85,27 @@ class S3CredentialManager:
         
         if self.aws_access_key and self.aws_secret_key:
             try:
-                if self.aws_role_arn:
-                    self.sts_client = boto3.client(
-                        'sts',
-                        aws_access_key_id=self.aws_access_key,
-                        aws_secret_access_key=self.aws_secret_key,
-                        region_name=self.aws_region
-                    )
-                    logger.info("STS client created for role assumption")
+                # Always try to create STS client if we have credentials
+                logger.info("Attempting to create STS client during initialization...")
+                self.sts_client = boto3.client(
+                    'sts',
+                    aws_access_key_id=self.aws_access_key,
+                    aws_secret_access_key=self.aws_secret_key,
+                    region_name=self.aws_region
+                )
                 
+                # Test the STS client
+                try:
+                    identity = self.sts_client.get_caller_identity()
+                    logger.info(f"STS client initialized successfully")
+                    logger.info(f"  Account: {identity['Account']}")
+                    logger.info(f"  ARN: {identity['Arn']}")
+                    logger.info(f"  UserID: {identity['UserId']}")
+                except Exception as e:
+                    logger.error(f"STS client test failed during init: {e}")
+                    self.sts_client = None
+                
+                # Create S3 client
                 self.s3_client = boto3.client(
                     's3',
                     aws_access_key_id=self.aws_access_key,
@@ -102,10 +115,12 @@ class S3CredentialManager:
                 logger.info("S3 client created successfully")
                 
             except Exception as e:
-                logger.error(f"Failed to create AWS clients: {e}")
+                logger.error(f"Failed to create AWS clients during init: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
         else:
             logger.error("Cannot create AWS clients - missing credentials")
-
+            
     def generate_user_credentials(self, user: User, user_projects: List[Project] = None, 
                                 ip_address: str = None) -> Dict[str, Any]:
         """
@@ -217,18 +232,39 @@ class S3CredentialManager:
     def _initialize_sts_client(self, access_key: str, secret_key: str, region: str):
         """Initialize the STS client."""
         try:
+            logger.info(f"Initializing STS client...")
+            logger.info(f"  Access Key (first 10 chars): {access_key[:10] if access_key else 'None'}")
+            logger.info(f"  Secret Key exists: {bool(secret_key)}")
+            logger.info(f"  Region: {region}")
+            
             client = boto3.client(
                 'sts',
                 aws_access_key_id=access_key,
                 aws_secret_access_key=secret_key,
                 region_name=region
             )
-            logger.info("STS client created successfully")
+            
+            # Test the client immediately
+            try:
+                caller_identity = client.get_caller_identity()
+                logger.info(f"STS client created and verified successfully")
+                logger.info(f"  Account: {caller_identity['Account']}")
+                logger.info(f"  ARN: {caller_identity['Arn']}")
+                logger.info(f"  UserID: {caller_identity['UserId']}")
+            except Exception as test_error:
+                logger.error(f"STS client verification failed: {test_error}")
+                logger.error(f"  Error type: {type(test_error).__name__}")
+                return None
+                
             return client
+            
         except Exception as e:
             logger.error(f"Failed to create STS client: {e}")
+            logger.error(f"  Error type: {type(e).__name__}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
-
+        
     def _create_error_response(self, region: str, error_message: str) -> Dict[str, Any]:
         """Create a standardized error response."""
         return {
@@ -314,6 +350,7 @@ class S3CredentialManager:
             ]
         }
 
+
     def _assume_role_with_policy(self, role_arn: str, session_name: str, policy: Dict[str, Any], 
                                 external_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -323,36 +360,75 @@ class S3CredentialManager:
             Dictionary with credentials or None if failed
         """
         try:
-            logger.info(f"Attempting to assume role: {role_arn}")
-            logger.info(f"Session name: {session_name}")
-            logger.info(f"External ID: {external_id}")
+            logger.info(f"=== Starting Role Assumption ===")
+            logger.info(f"  Role ARN: {role_arn}")
+            logger.info(f"  Session name: {session_name}")
+            logger.info(f"  External ID: {external_id}")
+            logger.info(f"  STS client exists: {self.sts_client is not None}")
+            
+            if not self.sts_client:
+                logger.error("STS client is None - cannot assume role")
+                return None
+            
+            # Log the policy being used (first 200 chars)
+            policy_str = json.dumps(policy)
+            logger.info(f"  Policy (first 200 chars): {policy_str[:200]}...")
             
             response = self.sts_client.assume_role(
                 RoleArn=role_arn,
                 RoleSessionName=session_name,
-                Policy=json.dumps(policy),
+                Policy=policy_str,
                 DurationSeconds=self.credential_duration_hours * 3600,
                 ExternalId=external_id
             )
             
-            logger.info("Successfully assumed role")
-            return response['Credentials']
+            logger.info("Successfully assumed role - received credentials")
+            
+            # Validate response structure
+            if 'Credentials' not in response:
+                logger.error("Response missing 'Credentials' key")
+                logger.error(f"Response keys: {response.keys()}")
+                return None
+                
+            credentials = response['Credentials']
+            logger.info(f"  Access Key ID (first 10): {credentials['AccessKeyId'][:10]}...")
+            logger.info(f"  Has Session Token: {bool(credentials.get('SessionToken'))}")
+            logger.info(f"  Expiration: {credentials.get('Expiration')}")
+            
+            return credentials
             
         except Exception as e:
             logger.error(f"STS assume role failed: {e}")
-            logger.error(f"Error type: {type(e).__name__}")
-            logger.error(f"Error details: {str(e)}")
+            logger.error(f"  Error type: {type(e).__name__}")
+            logger.error(f"  Error details: {str(e)}")
             
             # Check for specific error types
-            if 'AccessDenied' in str(e):
-                logger.error("Access Denied - check IAM user permissions and trust policy")
-            elif 'InvalidParameterValue' in str(e):
-                logger.error("Invalid parameter - check role ARN and external ID")
-            elif 'NoSuchEntity' in str(e):
-                logger.error("Role not found - check role ARN")
+            error_str = str(e)
+            if 'AccessDenied' in error_str:
+                logger.error("ACCESS DENIED - Possible issues:")
+                logger.error("  1. IAM user doesn't have sts:AssumeRole permission")
+                logger.error("  2. Trust policy doesn't allow this user")
+                logger.error("  3. External ID mismatch")
+            elif 'InvalidParameterValue' in error_str:
+                logger.error("INVALID PARAMETER - Check:")
+                logger.error("  1. Role ARN format")
+                logger.error("  2. External ID format")
+                logger.error("  3. Session name format")
+            elif 'NoSuchEntity' in error_str:
+                logger.error("ROLE NOT FOUND - Check:")
+                logger.error("  1. Role ARN is correct")
+                logger.error("  2. Role exists in the account")
+            elif 'MalformedPolicyDocument' in error_str:
+                logger.error("MALFORMED POLICY - Check:")
+                logger.error("  1. Policy JSON is valid")
+                logger.error("  2. Policy syntax is correct")
                 
+            import traceback
+            logger.error("Full traceback:")
+            logger.error(traceback.format_exc())
+            
             return None
-        
+
     def _generate_admin_credentials(self, user: User, role_arn: str, external_id: str, 
                                 region: str) -> Dict[str, Any]:
         """Generate STS credentials for admin users with full bucket access."""
@@ -371,6 +447,21 @@ class S3CredentialManager:
             logger.error("External ID is None or empty")
             return self._create_error_response(region, 'External ID not provided')
         
+        # Ensure STS client exists
+        if not self.sts_client:
+            logger.warning("STS client not initialized, attempting to create...")
+            aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
+            aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+            
+            if aws_access_key and aws_secret_key:
+                self.sts_client = self._initialize_sts_client(aws_access_key, aws_secret_key, region)
+                if not self.sts_client:
+                    logger.error("Failed to initialize STS client")
+                    return self._create_error_response(region, 'Failed to initialize STS client')
+            else:
+                logger.error("Cannot create STS client - missing AWS credentials")
+                return self._create_error_response(region, 'AWS credentials not available')
+        
         # Create admin policy with full bucket access
         try:
             policy = self._create_admin_policy()
@@ -386,18 +477,19 @@ class S3CredentialManager:
         
         # Attempt to assume role
         try:
-            logger.info("Attempting to assume role with STS...")
+            logger.info("Calling _assume_role_with_policy...")
             credentials = self._assume_role_with_policy(role_arn, session_name, policy, external_id)
             
             if not credentials:
-                logger.error("assume_role_with_policy returned None")
+                logger.error("_assume_role_with_policy returned None")
                 error_response = self._create_error_response(region, 'STS assume role returned no credentials')
                 error_response['debug_info'] = {
                     'role_arn': role_arn,
                     'external_id': external_id,
                     'session_name': session_name,
                     'user_role': user.role,
-                    'user_id': user.user_id
+                    'user_id': user.user_id,
+                    'sts_client_exists': self.sts_client is not None
                 }
                 return error_response
             
@@ -405,6 +497,9 @@ class S3CredentialManager:
             
         except Exception as e:
             logger.error(f"Exception during role assumption: {type(e).__name__}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
             error_response = self._create_error_response(region, f'Failed to assume role: {str(e)}')
             error_response['debug_info'] = {
                 'role_arn': role_arn,
@@ -451,14 +546,17 @@ class S3CredentialManager:
                 'access_level': 'full_bucket'
             }
             
-            logger.info(f"Successfully generated admin STS credentials for {user.username}")
-            logger.info(f"Credentials expire at: {response['expiration']}")
-            logger.info(f"User prefix: {user_prefix}")
+            logger.info(f"=== Successfully Generated Admin STS Credentials ===")
+            logger.info(f"  User: {user.username}")
+            logger.info(f"  Expires at: {response['expiration']}")
+            logger.info(f"  Access level: full_bucket")
             
             return response
             
         except Exception as e:
             logger.error(f"Error formatting response: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return self._create_error_response(region, f'Failed to format response: {str(e)}')
         
     def _generate_user_credentials(self, user: User, role_arn: str, external_id: str, 
