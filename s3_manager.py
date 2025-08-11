@@ -24,31 +24,63 @@ class S3CredentialManager:
     
     def __init__(self):
         """Initialize S3 credential manager."""
-        # AWS Configuration
+        # Read environment variables
+        self.data_bucket = os.getenv('S3_BUCKET', 'fibromapdata')  # Using S3_BUCKET as shown in your Railway env
+        self.images_bucket = os.getenv('AWS_IMAGES_BUCKET', 'fibromap-images')
         self.aws_region = os.getenv('AWS_REGION', 'us-east-1')
-        self.data_bucket = os.getenv('S3_BUCKET', 'fibromapdata')
-        self.images_bucket = os.getenv('S3_IMAGES_BUCKET', 'fibromap-images')
-        
-        # Credential settings
         self.credential_duration_hours = int(os.getenv('CREDENTIAL_DURATION_HOURS', '12'))
         
+        # Get AWS credentials - try multiple possible names
+        self.aws_access_key = os.getenv('AWS_ACCESS_KEY_ID') or os.getenv('AWS_ACCESS_KEY')
+        self.aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY') or os.getenv('AWS_SECRET_KEY')
+        self.aws_role_arn = os.getenv('AWS_ROLE_ARN')
+        self.aws_external_id = os.getenv('AWS_EXTERNAL_ID', 'fibromap-2024')
+        
+        # Debug logging
+        logger.info(f"S3 Manager Initialization:")
+        logger.info(f"  Data bucket: {self.data_bucket}")
+        logger.info(f"  Region: {self.aws_region}")
+        logger.info(f"  Access Key present: {bool(self.aws_access_key)}")
+        logger.info(f"  Secret Key present: {bool(self.aws_secret_key)}")
+        logger.info(f"  Role ARN: {self.aws_role_arn}")
+        
+        if not self.aws_access_key:
+            logger.error("AWS_ACCESS_KEY_ID not found in environment!")
+            logger.error(f"Available env vars: {list(os.environ.keys())}")
+        
+        if not self.aws_secret_key:
+            logger.error("AWS_SECRET_ACCESS_KEY not found in environment!")
+        
         # Initialize AWS clients
-        self.sts_client = boto3.client(
-            'sts',
-            region_name=self.aws_region,
-            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
-        )
+        self.sts_client = None
+        self.s3_client = None
         
-        self.s3_client = boto3.client(
-            's3',
-            region_name=self.aws_region,
-            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
-        )
-        
-        logger.info("S3 credential manager initialized")
-    
+        if self.aws_access_key and self.aws_secret_key:
+            try:
+                if self.aws_role_arn:
+                    # Create STS client for role assumption
+                    self.sts_client = boto3.client(
+                        'sts',
+                        aws_access_key_id=self.aws_access_key,
+                        aws_secret_access_key=self.aws_secret_key,
+                        region_name=self.aws_region
+                    )
+                    logger.info("STS client created for role assumption")
+                
+                # Create S3 client for direct operations
+                self.s3_client = boto3.client(
+                    's3',
+                    aws_access_key_id=self.aws_access_key,
+                    aws_secret_access_key=self.aws_secret_key,
+                    region_name=self.aws_region
+                )
+                logger.info("S3 client created successfully")
+                
+            except Exception as e:
+                logger.error(f"Failed to create AWS clients: {e}")
+        else:
+            logger.error("Cannot create AWS clients - missing credentials")
+
     def generate_user_credentials(self, user: User, user_projects: List[Project] = None, 
                                 ip_address: str = None) -> Dict[str, Any]:
         """
@@ -101,92 +133,93 @@ class S3CredentialManager:
     def _generate_data_bucket_credentials(self, user: User) -> Dict[str, Any]:
         """Generate temporary credentials for the data bucket."""
         try:
-            role_arn = os.getenv('AWS_ROLE_ARN')
+            # First, ensure we have the basic AWS credentials
+            if not self.aws_access_key or not self.aws_secret_key:
+                logger.error(f"No AWS credentials available for user {user.username}")
+                logger.error(f"AWS_ACCESS_KEY_ID: {self.aws_access_key is not None}")
+                logger.error(f"AWS_SECRET_ACCESS_KEY: {self.aws_secret_key is not None}")
+                raise ValueError("AWS credentials not configured on server")
             
-            if not role_arn:
-                # No STS role - return direct credentials with full access
-                logger.info(f"No AWS_ROLE_ARN configured, using direct credentials for user {user.username}")
-                return {
-                    'bucket_name': self.data_bucket,
-                    'access_key_id': os.getenv('AWS_ACCESS_KEY_ID'),
-                    'secret_access_key': os.getenv('AWS_SECRET_ACCESS_KEY'),
-                    'region': self.aws_region
-                }
-            
-            # Use STS to assume role with user-specific permissions
-            external_id = os.getenv('AWS_EXTERNAL_ID', 'fibromap-2024')
-            
-            # Create a policy that gives access to:
-            # 1. User's own data (read/write)
-            # 2. Company images (read-only)
-            # 3. Shared resources (read-only)
-            user_policy = {
-                "Version": "2012-10-17",
-                "Statement": [
-                    {
-                        "Effect": "Allow",
-                        "Action": ["s3:*"],
-                        "Resource": [
-                            # User's own project data - full access
-                            f"arn:aws:s3:::{self.data_bucket}/users/user_{user.user_id:03d}/*"
-                        ]
-                    },
-                    {
-                        "Effect": "Allow", 
-                        "Action": ["s3:GetObject", "s3:ListBucket"],
-                        "Resource": [
-                            # Company images - read only
-                            f"arn:aws:s3:::{self.data_bucket}/company_images/*",
-                            # Shared resources - read only
-                            f"arn:aws:s3:::{self.data_bucket}/shared_resources/*"
-                        ]
-                    },
-                    {
-                        "Effect": "Allow",
-                        "Action": ["s3:ListBucket"],
-                        "Resource": [
-                            # Allow listing the bucket itself
-                            f"arn:aws:s3:::{self.data_bucket}"
-                        ],
-                        "Condition": {
-                            "StringLike": {
-                                "s3:prefix": [
-                                    f"users/user_{user.user_id:03d}/*",
-                                    "company_images/*",
-                                    "shared_resources/*"
-                                ]
+            # If we have a role ARN, try to use STS
+            if self.aws_role_arn and self.sts_client:
+                logger.info(f"Attempting to assume role {self.aws_role_arn} for user {user.username}")
+                
+                try:
+                    # Create a policy that restricts access to the user's folder
+                    user_policy = {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Action": [
+                                    "s3:ListBucket"
+                                ],
+                                "Resource": f"arn:aws:s3:::{self.data_bucket}",
+                                "Condition": {
+                                    "StringLike": {
+                                        "s3:prefix": [
+                                            f"users/user_{user.user_id:03d}/*"
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "Effect": "Allow",
+                                "Action": [
+                                    "s3:GetObject",
+                                    "s3:PutObject",
+                                    "s3:DeleteObject"
+                                ],
+                                "Resource": f"arn:aws:s3:::{self.data_bucket}/users/user_{user.user_id:03d}/*"
                             }
-                        }
+                        ]
                     }
-                ]
-            }
+                    
+                    response = self.sts_client.assume_role(
+                        RoleArn=self.aws_role_arn,
+                        RoleSessionName=f'fibromap-user-{user.user_id}-{user.username}',
+                        ExternalId=self.aws_external_id,
+                        DurationSeconds=3600 * self.credential_duration_hours,
+                        Policy=json.dumps(user_policy)
+                    )
+                    
+                    logger.info(f"Successfully assumed role for user {user.username}")
+                    
+                    return {
+                        'bucket_name': self.data_bucket,
+                        'access_key_id': response['Credentials']['AccessKeyId'],
+                        'secret_access_key': response['Credentials']['SecretAccessKey'],
+                        'session_token': response['Credentials']['SessionToken'],
+                        'region': self.aws_region,
+                        'user_prefix': f"users/user_{user.user_id:03d}"
+                    }
+                    
+                except Exception as e:
+                    logger.error(f"Failed to assume role: {e}")
+                    logger.info("Falling back to direct credentials")
             
-            response = self.sts_client.assume_role(
-                RoleArn=role_arn,
-                RoleSessionName=f'fibromap-user-{user.user_id}',
-                ExternalId=external_id,
-                DurationSeconds=3600 * self.credential_duration_hours,
-                Policy=json.dumps(user_policy)
-            )
+            # Fallback: Return direct credentials (less secure but works for testing)
+            logger.info(f"Using direct credentials for user {user.username}")
             
             return {
                 'bucket_name': self.data_bucket,
-                'access_key_id': response['Credentials']['AccessKeyId'],
-                'secret_access_key': response['Credentials']['SecretAccessKey'],
-                'session_token': response['Credentials']['SessionToken'],
-                'region': self.aws_region
+                'access_key_id': self.aws_access_key,
+                'secret_access_key': self.aws_secret_key,
+                'region': self.aws_region,
+                'user_prefix': f"users/user_{user.user_id:03d}"
             }
             
         except Exception as e:
-            logger.error(f"Error generating data bucket credentials: {e}")
-            # Fallback to direct credentials
+            logger.error(f"Error generating credentials: {e}")
+            # Return empty credentials structure
             return {
                 'bucket_name': self.data_bucket,
-                'access_key_id': os.getenv('AWS_ACCESS_KEY_ID'),
-                'secret_access_key': os.getenv('AWS_SECRET_ACCESS_KEY'),
-                'region': self.aws_region
+                'access_key_id': None,
+                'secret_access_key': None,
+                'region': self.aws_region,
+                'error': str(e)
             }
-        
+      
     def _generate_images_bucket_credentials(self, user: User, projects: List[Project]) -> Optional[Dict[str, Any]]:
         """
         Generate temporary credentials for company images bucket access.
