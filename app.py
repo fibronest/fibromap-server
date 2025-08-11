@@ -404,60 +404,6 @@ def admin_create_user():
                     logger.info(f"Updated user {username} to admin role")
             except Exception as e:
                 logger.error(f"Failed to update user role: {e}")
-                # User was created but role update failed
-                return jsonify({
-                    'message': 'User created but role update failed',
-                    'user': user.to_dict()
-                }), 201
-        
-        return jsonify({
-            'message': 'User created successfully',
-            'user': user.to_dict()
-        }), 201
-        
-    except Exception as e:
-        logger.error(f"Create user error: {e}")
-        return jsonify({'error': f'Failed to create user: {str(e)}'}), 500
-
-@app.route('/api/admin/users', methods=['POST'])
-@require_admin
-def admin_create_user():
-    """Create new user (admin only)."""
-    try:
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({'error': 'JSON data required'}), 400
-        
-        username = data.get('username', '').strip()
-        email = data.get('email', '').strip()
-        password = data.get('password', '')
-        role = data.get('role', 'user')
-        
-        if not all([username, email, password]):
-            return jsonify({'error': 'Username, email, and password are required'}), 400
-        
-        # Create user without role parameter (register_user doesn't accept it)
-        success, message, user = auth_manager.register_user(
-            username, email, password, get_client_ip()
-        )
-        
-        if not success:
-            return jsonify({'error': message}), 400
-        
-        # If admin role requested, update it after creation
-        if success and role == 'admin':
-            try:
-                with db_manager.get_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        UPDATE users SET role = %s WHERE user_id = %s
-                    """, ('admin', user.user_id))
-                    conn.commit()
-                    user.role = 'admin'
-                    logger.info(f"Updated user {username} to admin role")
-            except Exception as e:
-                logger.error(f"Failed to update user role: {e}")
                 # User was created but role update failed - still log and return user
                 db_manager.create_audit_log(
                     user_id=g.current_user.user_id,
