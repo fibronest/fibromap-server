@@ -44,7 +44,7 @@ class S3CredentialManager:
         self.data_bucket = os.getenv('S3_BUCKET', 'fibromapdata')
         self.images_bucket = os.getenv('AWS_IMAGES_BUCKET', 'fibromap-images')
         self.aws_region = os.getenv('AWS_REGION', 'us-east-1')
-        self.credential_duration_hours = int(os.getenv('CREDENTIAL_DURATION_HOURS', '12'))
+        self.credential_duration_hours = int(os.getenv('CREDENTIAL_DURATION_HOURS', '1'))
         
         # Try multiple possible names for AWS credentials
         self.aws_access_key = (
