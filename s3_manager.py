@@ -325,6 +325,7 @@ class S3CredentialManager:
         try:
             logger.info(f"Attempting to assume role: {role_arn}")
             logger.info(f"Session name: {session_name}")
+            logger.info(f"External ID: {external_id}")
             
             response = self.sts_client.assume_role(
                 RoleArn=role_arn,
@@ -334,44 +335,132 @@ class S3CredentialManager:
                 ExternalId=external_id
             )
             
+            logger.info("Successfully assumed role")
             return response['Credentials']
             
         except Exception as e:
             logger.error(f"STS assume role failed: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            logger.error(f"Error details: {str(e)}")
+            
+            # Check for specific error types
+            if 'AccessDenied' in str(e):
+                logger.error("Access Denied - check IAM user permissions and trust policy")
+            elif 'InvalidParameterValue' in str(e):
+                logger.error("Invalid parameter - check role ARN and external ID")
+            elif 'NoSuchEntity' in str(e):
+                logger.error("Role not found - check role ARN")
+                
             return None
-
+        
     def _generate_admin_credentials(self, user: User, role_arn: str, external_id: str, 
                                 region: str) -> Dict[str, Any]:
         """Generate STS credentials for admin users with full bucket access."""
-        logger.info(f"Generating admin credentials for user {user.username}")
+        logger.info(f"=== Generating Admin Credentials ===")
+        logger.info(f"User: {user.username} (ID: {user.user_id})")
+        logger.info(f"Role ARN: {role_arn}")
+        logger.info(f"External ID: {external_id}")
+        logger.info(f"Region: {region}")
         
-        # Create admin policy
-        policy = self._create_admin_policy()
+        # Validate inputs
+        if not role_arn:
+            logger.error("Role ARN is None or empty")
+            return self._create_error_response(region, 'Role ARN not provided')
         
-        # Generate session name
-        session_name = f"fibromap-admin-{user.user_id}-{int(datetime.now().timestamp())}"
+        if not external_id:
+            logger.error("External ID is None or empty")
+            return self._create_error_response(region, 'External ID not provided')
         
-        # Assume role with admin policy
-        credentials = self._assume_role_with_policy(role_arn, session_name, policy, external_id)
+        # Create admin policy with full bucket access
+        try:
+            policy = self._create_admin_policy()
+            logger.info(f"Created admin policy for bucket: {self.data_bucket}")
+        except Exception as e:
+            logger.error(f"Failed to create admin policy: {e}")
+            return self._create_error_response(region, f'Failed to create admin policy: {str(e)}')
         
-        if not credentials:
-            return self._create_error_response(region, 'Failed to assume role for admin user')
+        # Generate unique session name
+        timestamp = int(datetime.now().timestamp())
+        session_name = f"fibromap-admin-{user.user_id}-{timestamp}"
+        logger.info(f"Session name: {session_name}")
         
-        logger.info(f"Successfully generated admin STS credentials for {user.username}")
+        # Attempt to assume role
+        try:
+            logger.info("Attempting to assume role with STS...")
+            credentials = self._assume_role_with_policy(role_arn, session_name, policy, external_id)
+            
+            if not credentials:
+                logger.error("assume_role_with_policy returned None")
+                error_response = self._create_error_response(region, 'STS assume role returned no credentials')
+                error_response['debug_info'] = {
+                    'role_arn': role_arn,
+                    'external_id': external_id,
+                    'session_name': session_name,
+                    'user_role': user.role,
+                    'user_id': user.user_id
+                }
+                return error_response
+            
+            logger.info("Successfully obtained STS credentials")
+            
+        except Exception as e:
+            logger.error(f"Exception during role assumption: {type(e).__name__}: {str(e)}")
+            error_response = self._create_error_response(region, f'Failed to assume role: {str(e)}')
+            error_response['debug_info'] = {
+                'role_arn': role_arn,
+                'external_id': external_id,
+                'session_name': session_name,
+                'error_type': type(e).__name__,
+                'error_details': str(e)
+            }
+            return error_response
         
-        return {
-            'bucket_name': self.data_bucket,
-            'access_key_id': credentials['AccessKeyId'],
-            'secret_access_key': credentials['SecretAccessKey'],
-            'session_token': credentials['SessionToken'],
-            'region': region,
-            'user_prefix': f"users/user_{user.user_id:03d}",
-            'expiration': credentials['Expiration'].isoformat(),
-            'credential_type': 'sts',
-            'user_role': 'admin',
-            'access_level': 'full_bucket'
-        }
-
+        # Validate credentials structure
+        try:
+            if not isinstance(credentials, dict):
+                logger.error(f"Credentials is not a dict: {type(credentials)}")
+                return self._create_error_response(region, 'Invalid credentials format')
+            
+            required_fields = ['AccessKeyId', 'SecretAccessKey', 'SessionToken', 'Expiration']
+            missing_fields = [field for field in required_fields if field not in credentials]
+            
+            if missing_fields:
+                logger.error(f"Missing credential fields: {missing_fields}")
+                return self._create_error_response(region, f'Incomplete credentials: missing {missing_fields}')
+            
+            logger.info("Credentials validation passed")
+            
+        except Exception as e:
+            logger.error(f"Error validating credentials: {e}")
+            return self._create_error_response(region, f'Credential validation error: {str(e)}')
+        
+        # Format successful response
+        try:
+            user_prefix = f"users/user_{user.user_id:03d}"
+            
+            response = {
+                'bucket_name': self.data_bucket,
+                'access_key_id': credentials['AccessKeyId'],
+                'secret_access_key': credentials['SecretAccessKey'],
+                'session_token': credentials['SessionToken'],
+                'region': region,
+                'user_prefix': user_prefix,
+                'expiration': credentials['Expiration'].isoformat() if hasattr(credentials['Expiration'], 'isoformat') else str(credentials['Expiration']),
+                'credential_type': 'sts',
+                'user_role': 'admin',
+                'access_level': 'full_bucket'
+            }
+            
+            logger.info(f"Successfully generated admin STS credentials for {user.username}")
+            logger.info(f"Credentials expire at: {response['expiration']}")
+            logger.info(f"User prefix: {user_prefix}")
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error formatting response: {e}")
+            return self._create_error_response(region, f'Failed to format response: {str(e)}')
+        
     def _generate_user_credentials(self, user: User, role_arn: str, external_id: str, 
                                 region: str) -> Dict[str, Any]:
         """Generate STS credentials for regular users with restricted access."""
@@ -410,6 +499,7 @@ class S3CredentialManager:
             'access_level': 'restricted',
             'accessible_prefixes': [user_prefix] + (shared_prefixes or [])
         }
+    
     def _generate_images_bucket_credentials(self, user: User, projects: List[Project]) -> Optional[Dict[str, Any]]:
         """
         Generate temporary credentials for company images bucket access.
