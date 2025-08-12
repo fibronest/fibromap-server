@@ -114,6 +114,16 @@ class DatabaseManager:
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
+                    # Check if username already exists (case-insensitive)
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM users 
+                        WHERE LOWER(username) = LOWER(%s)
+                    """, (username,))
+                    
+                    if cursor.fetchone()[0] > 0:
+                        logger.warning(f"Username '{username}' already exists")
+                        return None
+                    
                     cursor.execute("""
                         INSERT INTO users (username, email, password_hash, role)
                         VALUES (%s, %s, %s, %s)
@@ -351,6 +361,18 @@ class DatabaseManager:
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
+                    # Check if project name already exists for this user
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM projects 
+                        WHERE LOWER(project_name) = LOWER(%s) 
+                        AND owner_id = %s 
+                        AND is_active = true
+                    """, (project.project_name, project.owner_id))
+                    
+                    if cursor.fetchone()[0] > 0:
+                        logger.warning(f"Project name '{project.project_name}' already exists for user {project.owner_id}")
+                        return None
+                    
                     cursor.execute("""
                         INSERT INTO projects (project_name, description, owner_id, s3_data_path, s3_images_folder)
                         VALUES (%s, %s, %s, %s, %s)

@@ -257,7 +257,7 @@ def create_project():
         created_project = db_manager.create_project(project)
         
         if not created_project:
-            return jsonify({'error': 'Failed to create project'}), 500
+            return jsonify({'error': 'A project with this name already exists. Please choose a different name.'}), 400
         
         # Update S3 data path with real project ID
         real_s3_path = S3PathHelper.get_project_prefix(g.current_user.user_id, created_project.project_id, g.current_user.username, project_name)

@@ -531,7 +531,7 @@ class S3CredentialManager:
         
         # Format successful response
         try:
-            user_prefix = f"users/{user.username}_{user.user_id}"
+            user_prefix = f"users/{user.username}"
             
             response = {
                 'bucket_name': self.data_bucket,
@@ -564,7 +564,7 @@ class S3CredentialManager:
         """Generate STS credentials for regular users with restricted access."""
         logger.info(f"Generating user credentials for user {user.username}")
         
-        user_prefix = f"users/{user.username}_{user.user_id}"
+        user_prefix = f"users/{user.username}"
         
         # TODO: In the future, fetch shared project prefixes from database
         # For now, just give access to user's own folder
@@ -724,7 +724,7 @@ class S3CredentialManager:
         try:
             if bucket_name == self.data_bucket:
                 # Check data bucket access
-                expected_prefix = f"users/{user.username}_{user.user_id}/"
+                expected_prefix = f"users/{user.username}/"
                 return s3_path.startswith(expected_prefix)
             
             elif bucket_name == self.images_bucket:
@@ -762,20 +762,16 @@ class S3CredentialManager:
         Returns:
             Dictionary with S3 paths for the project
         """
-        # Get username from database
+        # Get username and project name from database
         from database import db_manager
         user = db_manager.get_user_by_id(user_id)
-        if not user:
-            logger.error(f"User {user_id} not found")
+        project = db_manager.get_project_by_id(project_id)
+        if not user or not project:
+            logger.error(f"User or project not found")
             return {}
         
-        # Get project name from database
-        project = db_manager.get_project_by_id(project_id)
-        if project and project.project_name:
-            safe_project_name = project.project_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
-            base_path = f"users/{user.username}_{user_id}/{safe_project_name}_{project_id}"
-        else:
-            base_path = f"users/{user.username}_{user_id}/project_{project_id:03d}"
+        safe_project_name = project.project_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+        base_path = f"users/{user.username}/{safe_project_name}"
         
         return {
             'current_path': f"{base_path}/current",
@@ -800,20 +796,16 @@ class S3CredentialManager:
         Returns:
             S3 path for the version backup
         """
-        # Get username from database
+        # Get username and project name from database
         from database import db_manager
         user = db_manager.get_user_by_id(user_id)
-        if not user:
-            logger.error(f"User {user_id} not found")
-            base_path = f"users/user_{user_id:03d}/project_{project_id:03d}/versions"  # fallback
-        else:
-            # Get project name from database
-            project = db_manager.get_project_by_id(project_id)
-            if project and project.project_name:
-                safe_project_name = project.project_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
-                base_path = f"users/{user.username}_{user_id}/{safe_project_name}_{project_id}/versions"
-            else:
-                base_path = f"users/{user.username}_{user_id}/project_{project_id:03d}/versions"
+        project = db_manager.get_project_by_id(project_id)
+        if not user or not project:
+            logger.error(f"User or project not found")
+            return ""
+        
+        safe_project_name = project.project_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+        base_path = f"users/{user.username}/{safe_project_name}/versions"
         
         # Format: 2025-01-15_10-30-00_userA or 2025-01-15_10-30-00_userA_overwritten
         timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S")
@@ -860,18 +852,11 @@ class S3PathHelper:
             return f"users/user_{user_id:03d}"
     
     @staticmethod
-    def get_project_prefix(user_id: int, project_id: int, username: str, project_name: str = None) -> str:
+    def get_project_prefix(user_id: int, project_id: int, username: str, project_name: str) -> str:
         """Generate S3 prefix for a project."""
-        user_prefix = f"users/{username}_{user_id}"
-        
-        if project_id > 0:
-            if project_name:
-                safe_project_name = project_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
-                return f"{user_prefix}/{safe_project_name}_{project_id}/"
-            else:
-                return f"{user_prefix}/project_{project_id:03d}/"
-        else:
-            return f"{user_prefix}/"
+        user_prefix = f"users/{username}"
+        safe_project_name = project_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+        return f"{user_prefix}/{safe_project_name}/"
     
     @staticmethod
     def get_current_data_prefix(user_id: int, project_id: int, username: str = None) -> str:
@@ -947,9 +932,9 @@ class S3PathHelper:
     def is_valid_user_path(s3_path: str, user_id: int, username: str = None) -> bool:
         """Check if S3 path is valid for a specific user."""
         if username:
-            expected_prefix = f"users/{username}_{user_id}/"
+            expected_prefix = f"users/{username}/"
         else:
-            expected_prefix = f"users/{username}_{user_id}/"
+            expected_prefix = f"users/user_{user_id:03d}/"  # Fallback
         return s3_path.startswith(expected_prefix)
     
     @staticmethod
