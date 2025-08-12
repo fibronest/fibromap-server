@@ -833,15 +833,24 @@ class DatabaseManager:
                         current_owner = cursor.fetchone()
                         if current_owner and current_owner[0]:
                             # Downgrade current owner to write permission
+                            # Check if current owner is an admin
+                            cursor.execute("""
+                                SELECT role FROM users WHERE user_id = %s
+                            """, (current_owner[0],))
+                            old_owner_role = cursor.fetchone()
+
+                            # Downgrade current owner - admin users get admin permission, others get write
+                            new_permission = 'admin' if old_owner_role and old_owner_role[0] == 'admin' else 'write'
+
                             cursor.execute("""
                                 INSERT INTO project_permissions 
                                 (project_id, user_id, permission_level, granted_by)
-                                VALUES (%s, %s, 'write', %s)
+                                VALUES (%s, %s, %s, %s)
                                 ON CONFLICT (project_id, user_id) 
-                                DO UPDATE SET permission_level = 'write',
+                                DO UPDATE SET permission_level = EXCLUDED.permission_level,
                                             granted_by = EXCLUDED.granted_by,
                                             granted_at = CURRENT_TIMESTAMP
-                            """, (project_id, current_owner[0], granted_by))
+                            """, (project_id, current_owner[0], new_permission, granted_by))
                         
                         # Update project owner
                         cursor.execute("""
