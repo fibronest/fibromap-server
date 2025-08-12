@@ -97,7 +97,6 @@ class DatabaseManager:
             self.pool.closeall()
     
     # User operations
-    
     def create_user(self, username: str, email: str, password_hash: str, role: str = 'user') -> Optional[User]:
         """
         Create a new user.
@@ -355,7 +354,6 @@ class DatabaseManager:
             return 0
     
     # Project operations
-    
     def create_project(self, project: Project) -> Optional[Project]:
         """Create a new project."""
         try:
@@ -455,6 +453,79 @@ class DatabaseManager:
             import traceback
             logger.error(traceback.format_exc())
             return False
+    
+    def transfer_project_ownership(self, project_id: int, new_owner_id: int, 
+                                  transferred_by: int) -> Optional[Dict]:
+        """
+        Transfer project ownership to a new user.
+        Returns info needed for S3 folder move.
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Get current owner and project details
+                    cursor.execute("""
+                        SELECT p.owner_id, p.project_name, u1.username as old_username,
+                               u2.username as new_username
+                        FROM projects p
+                        LEFT JOIN users u1 ON p.owner_id = u1.user_id
+                        LEFT JOIN users u2 ON u2.user_id = %s
+                        WHERE p.project_id = %s
+                    """, (new_owner_id, project_id))
+                    
+                    row = cursor.fetchone()
+                    if not row:
+                        return None
+                    
+                    old_owner_id = row[0]
+                    project_name = row[1]
+                    old_username = row[2]
+                    new_username = row[3]
+                    
+                    if old_owner_id == new_owner_id:
+                        return None  # Already the owner
+                    
+                    # Downgrade old owner to write permission if they exist
+                    if old_owner_id:
+                        cursor.execute("""
+                            INSERT INTO project_permissions 
+                            (project_id, user_id, permission_level, granted_by)
+                            VALUES (%s, %s, 'write', %s)
+                            ON CONFLICT (project_id, user_id) 
+                            DO UPDATE SET permission_level = 'write',
+                                        granted_by = EXCLUDED.granted_by,
+                                        granted_at = CURRENT_TIMESTAMP
+                        """, (project_id, old_owner_id, transferred_by))
+                    
+                    # Update project owner
+                    cursor.execute("""
+                        UPDATE projects 
+                        SET owner_id = %s, 
+                            last_modified_by = %s,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE project_id = %s
+                    """, (new_owner_id, transferred_by, project_id))
+                    
+                    # Remove any permission entry for new owner (owner tracked in projects table)
+                    cursor.execute("""
+                        DELETE FROM project_permissions 
+                        WHERE project_id = %s AND user_id = %s
+                    """, (project_id, new_owner_id))
+                    
+                    conn.commit()
+                    
+                    return {
+                        'old_owner_id': old_owner_id,
+                        'old_username': old_username,
+                        'new_owner_id': new_owner_id,
+                        'new_username': new_username,
+                        'project_name': project_name,
+                        'project_id': project_id
+                    }
+                    
+        except Exception as e:
+            logger.error(f"Error transferring ownership: {e}")
+            return None
         
     def get_user_projects(self, user_id: int) -> List[Project]:
         """Get all projects accessible to a user (owned or has permissions)."""

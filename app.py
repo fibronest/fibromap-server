@@ -667,38 +667,63 @@ def grant_project_permission(project_id):
         if permission_level not in valid_levels:
             return jsonify({'error': f'Invalid permission level. Must be one of: {valid_levels}'}), 400
         
-        # Get current user (admin) from g instead of auth_manager
-        current_user = g.current_user  # Changed from auth_manager.current_user
+        current_user = g.current_user
         if not current_user:
             return jsonify({'error': 'Could not identify current user'}), 401
         
-        # Grant permission
-        success = db_manager.grant_project_permission(
-            project_id, user_id, permission_level, current_user.user_id
-        )
-        
-        if success:
-            # Log the action
-            db_manager.create_audit_log(
-                user_id=current_user.user_id,
-                action='grant_permission',
-                project_id=project_id,
-                details=f'Granted {permission_level} permission to user {user_id}'
+        # Handle ownership transfer specially
+        if permission_level == 'owner':
+            transfer_info = db_manager.transfer_project_ownership(
+                project_id, user_id, current_user.user_id
             )
             
-            return jsonify({
-                'message': f'Successfully granted {permission_level} permission',
-                'project_id': project_id,
-                'user_id': user_id,
-                'permission_level': permission_level
-            })
+            if transfer_info:
+                # Log the action
+                db_manager.create_audit_log(
+                    user_id=current_user.user_id,
+                    action='transfer_ownership',
+                    project_id=project_id,
+                    details=f'Transferred ownership from {transfer_info["old_username"]} to {transfer_info["new_username"]}'
+                )
+                
+                return jsonify({
+                    'message': f'Successfully transferred ownership',
+                    'project_id': project_id,
+                    'user_id': user_id,
+                    'permission_level': 'owner',
+                    's3_move_required': True,
+                    'move_info': transfer_info
+                })
+            else:
+                return jsonify({'error': 'Failed to transfer ownership'}), 500
         else:
-            return jsonify({'error': 'Failed to grant permission'}), 500
+            # Regular permission grant
+            success = db_manager.grant_project_permission(
+                project_id, user_id, permission_level, current_user.user_id
+            )
+            
+            if success:
+                # Log the action
+                db_manager.create_audit_log(
+                    user_id=current_user.user_id,
+                    action='grant_permission',
+                    project_id=project_id,
+                    details=f'Granted {permission_level} permission to user {user_id}'
+                )
+                
+                return jsonify({
+                    'message': f'Successfully granted {permission_level} permission',
+                    'project_id': project_id,
+                    'user_id': user_id,
+                    'permission_level': permission_level
+                })
+            else:
+                return jsonify({'error': 'Failed to grant permission'}), 500
             
     except Exception as e:
         logger.error(f"Failed to grant permission: {e}")
         return jsonify({'error': 'Failed to grant permission'}), 500
-    
+            
 
 @app.route('/api/admin/projects/<int:project_id>/permissions/<int:user_id>', methods=['PUT'])
 @require_auth
@@ -721,33 +746,58 @@ def modify_project_permission(project_id, user_id):
         if permission_level not in valid_levels:
             return jsonify({'error': f'Invalid permission level. Must be one of: {valid_levels}'}), 400
         
-        # Get current user (admin) - CHANGED FROM auth_manager.current_user
         current_user = g.current_user
         if not current_user:
             return jsonify({'error': 'Could not identify current user'}), 401
         
-        # Modify permission
-        success = db_manager.modify_project_permission(
-            project_id, user_id, permission_level, current_user.user_id
-        )
-        
-        if success:
-            # Log the action
-            db_manager.create_audit_log(
-                user_id=current_user.user_id,
-                action='modify_permission',
-                project_id=project_id,
-                details=f'Modified permission for user {user_id} to {permission_level}'
+        # Handle ownership transfer specially
+        if permission_level == 'owner':
+            transfer_info = db_manager.transfer_project_ownership(
+                project_id, user_id, current_user.user_id
             )
             
-            return jsonify({
-                'message': f'Successfully modified permission to {permission_level}',
-                'project_id': project_id,
-                'user_id': user_id,
-                'permission_level': permission_level
-            })
+            if transfer_info:
+                # Log the action
+                db_manager.create_audit_log(
+                    user_id=current_user.user_id,
+                    action='transfer_ownership',
+                    project_id=project_id,
+                    details=f'Transferred ownership from {transfer_info["old_username"]} to {transfer_info["new_username"]}'
+                )
+                
+                return jsonify({
+                    'message': f'Successfully transferred ownership',
+                    'project_id': project_id,
+                    'user_id': user_id,
+                    'permission_level': 'owner',
+                    's3_move_required': True,
+                    'move_info': transfer_info
+                })
+            else:
+                return jsonify({'error': 'Failed to transfer ownership'}), 500
         else:
-            return jsonify({'error': 'Failed to modify permission'}), 500
+            # Regular permission modification
+            success = db_manager.modify_project_permission(
+                project_id, user_id, permission_level, current_user.user_id
+            )
+            
+            if success:
+                # Log the action
+                db_manager.create_audit_log(
+                    user_id=current_user.user_id,
+                    action='modify_permission',
+                    project_id=project_id,
+                    details=f'Modified permission for user {user_id} to {permission_level}'
+                )
+                
+                return jsonify({
+                    'message': f'Successfully modified permission to {permission_level}',
+                    'project_id': project_id,
+                    'user_id': user_id,
+                    'permission_level': permission_level
+                })
+            else:
+                return jsonify({'error': 'Failed to modify permission'}), 500
             
     except Exception as e:
         logger.error(f"Failed to modify permission: {e}")
