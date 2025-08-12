@@ -531,7 +531,7 @@ class S3CredentialManager:
         
         # Format successful response
         try:
-            user_prefix = f"users/user_{user.user_id:03d}"
+            user_prefix = f"users/{user.username}_{user.user_id}"
             
             response = {
                 'bucket_name': self.data_bucket,
@@ -564,7 +564,7 @@ class S3CredentialManager:
         """Generate STS credentials for regular users with restricted access."""
         logger.info(f"Generating user credentials for user {user.username}")
         
-        user_prefix = f"users/user_{user.user_id:03d}"
+        user_prefix = f"users/{user.username}_{user.user_id}"
         
         # TODO: In the future, fetch shared project prefixes from database
         # For now, just give access to user's own folder
@@ -794,7 +794,14 @@ class S3CredentialManager:
         Returns:
             S3 path for the version backup
         """
-        base_path = f"users/user_{user_id:03d}/project_{project_id:03d}/versions"
+        # Get username from database
+        from database import db_manager
+        user = db_manager.get_user_by_id(user_id)
+        if not user:
+            logger.error(f"User {user_id} not found")
+            base_path = f"users/user_{user_id:03d}/project_{project_id:03d}/versions"  # fallback
+        else:
+            base_path = f"users/{user.username}_{user_id}/project_{project_id:03d}/versions"
         
         # Format: 2025-01-15_10-30-00_userA or 2025-01-15_10-30-00_userA_overwritten
         timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S")
