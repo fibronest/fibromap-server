@@ -242,7 +242,7 @@ def create_project():
             return jsonify({'error': 'Project name is required'}), 400
         
         # Generate S3 data path
-        s3_data_path = S3PathHelper.get_project_prefix(g.current_user.user_id, 0,  g.current_user.username)  # Will be updated with real project ID
+        s3_data_path = S3PathHelper.get_project_prefix(g.current_user.user_id, 0, g.current_user.username, project_name)  # Will be updated with real project ID
         
         # Create project
         project = Project(
@@ -260,7 +260,7 @@ def create_project():
             return jsonify({'error': 'Failed to create project'}), 500
         
         # Update S3 data path with real project ID
-        real_s3_path = S3PathHelper.get_project_prefix(g.current_user.user_id, created_project.project_id, g.current_user.username)
+        real_s3_path = S3PathHelper.get_project_prefix(g.current_user.user_id, created_project.project_id, g.current_user.username, project_name)
         
         # Update the s3_data_path in the database with the real project ID
         db_manager.update_project_s3_path(created_project.project_id, real_s3_path)

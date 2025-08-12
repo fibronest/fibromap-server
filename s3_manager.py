@@ -769,7 +769,13 @@ class S3CredentialManager:
             logger.error(f"User {user_id} not found")
             return {}
         
-        base_path = f"users/{user.username}_{user_id}/project_{project_id:03d}"
+        # Get project name from database
+        project = db_manager.get_project_by_id(project_id)
+        if project and project.project_name:
+            safe_project_name = project.project_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+            base_path = f"users/{user.username}_{user_id}/{safe_project_name}_{project_id}"
+        else:
+            base_path = f"users/{user.username}_{user_id}/project_{project_id:03d}"
         
         return {
             'current_path': f"{base_path}/current",
@@ -801,7 +807,13 @@ class S3CredentialManager:
             logger.error(f"User {user_id} not found")
             base_path = f"users/user_{user_id:03d}/project_{project_id:03d}/versions"  # fallback
         else:
-            base_path = f"users/{user.username}_{user_id}/project_{project_id:03d}/versions"
+            # Get project name from database
+            project = db_manager.get_project_by_id(project_id)
+            if project and project.project_name:
+                safe_project_name = project.project_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+                base_path = f"users/{user.username}_{user_id}/{safe_project_name}_{project_id}/versions"
+            else:
+                base_path = f"users/{user.username}_{user_id}/project_{project_id:03d}/versions"
         
         # Format: 2025-01-15_10-30-00_userA or 2025-01-15_10-30-00_userA_overwritten
         timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S")
@@ -848,12 +860,16 @@ class S3PathHelper:
             return f"users/user_{user_id:03d}"
     
     @staticmethod
-    def get_project_prefix(user_id: int, project_id: int, username: str) -> str:
+    def get_project_prefix(user_id: int, project_id: int, username: str, project_name: str = None) -> str:
         """Generate S3 prefix for a project."""
         user_prefix = f"users/{username}_{user_id}"
         
         if project_id > 0:
-            return f"{user_prefix}/project_{project_id:03d}/"
+            if project_name:
+                safe_project_name = project_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+                return f"{user_prefix}/{safe_project_name}_{project_id}/"
+            else:
+                return f"{user_prefix}/project_{project_id:03d}/"
         else:
             return f"{user_prefix}/"
     
@@ -897,7 +913,10 @@ class S3PathHelper:
             user_part = parts[1]  # john_15 or user_001
             project_part = parts[2]  # project_002
             
-            if not project_part.startswith('project_'):
+            # Project part might be project_XXX or projectname_XXX
+            # Extract project ID from the end after last underscore
+            last_underscore = project_part.rfind('_')
+            if last_underscore == -1:
                 return None
             
             # Parse user part
@@ -913,8 +932,11 @@ class S3PathHelper:
                 username = user_part[:last_underscore]
                 user_id = int(user_part[last_underscore + 1:])
             
-            # Parse project ID
-            project_id = int(project_part[8:])  # Remove 'project_' prefix
+            # Parse project ID from end of project folder name
+            try:
+                project_id = int(project_part[last_underscore + 1:])
+            except ValueError:
+                return None
             
             return user_id, project_id, username
             
