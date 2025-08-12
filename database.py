@@ -140,6 +140,12 @@ class DatabaseManager:
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
+                    # Delete audit logs first to avoid foreign key constraint
+                    cursor.execute(
+                        "DELETE FROM audit_log WHERE user_id = %s",
+                        (user_id,)
+                    )
+                    
                     # Delete user (cascade will handle sessions and permissions)
                     cursor.execute(
                         "DELETE FROM users WHERE user_id = %s",
