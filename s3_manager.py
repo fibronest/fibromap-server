@@ -724,7 +724,7 @@ class S3CredentialManager:
         try:
             if bucket_name == self.data_bucket:
                 # Check data bucket access
-                expected_prefix = f"users/user_{user.user_id:03d}/"
+                expected_prefix = f"users/{user.username}_{user.user_id}/"
                 return s3_path.startswith(expected_prefix)
             
             elif bucket_name == self.images_bucket:
@@ -762,7 +762,14 @@ class S3CredentialManager:
         Returns:
             Dictionary with S3 paths for the project
         """
-        base_path = f"users/user_{user_id:03d}/project_{project_id:03d}"
+        # Get username from database
+        from database import db_manager
+        user = db_manager.get_user_by_id(user_id)
+        if not user:
+            logger.error(f"User {user_id} not found")
+            return {}
+        
+        base_path = f"users/{user.username}_{user_id}/project_{project_id:03d}"
         
         return {
             'current_path': f"{base_path}/current",
@@ -834,10 +841,14 @@ class S3PathHelper:
             return f"users/user_{user_id:03d}"
     
     @staticmethod
-    def get_project_prefix(user_id: int, project_id: int, username: str = None) -> str:
-        """Get S3 prefix for a specific project."""
-        user_prefix = S3PathHelper.get_user_prefix(user_id, username)
-        return f"{user_prefix}/project_{project_id:03d}"
+    def get_project_prefix(user_id: int, project_id: int, username: str) -> str:
+        """Generate S3 prefix for a project."""
+        user_prefix = f"users/{username}_{user_id}"
+        
+        if project_id > 0:
+            return f"{user_prefix}/project_{project_id:03d}/"
+        else:
+            return f"{user_prefix}/"
     
     @staticmethod
     def get_current_data_prefix(user_id: int, project_id: int, username: str = None) -> str:
@@ -909,7 +920,7 @@ class S3PathHelper:
         if username:
             expected_prefix = f"users/{username}_{user_id}/"
         else:
-            expected_prefix = f"users/user_{user_id:03d}/"
+            expected_prefix = f"users/{username}_{user_id}/"
         return s3_path.startswith(expected_prefix)
     
     @staticmethod
