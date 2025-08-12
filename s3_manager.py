@@ -824,65 +824,92 @@ class S3PathHelper:
     """Helper class for S3 path operations."""
     
     @staticmethod
-    def get_user_prefix(user_id: int) -> str:
+    def get_user_prefix(user_id: int, username: str = None) -> str:
         """Get S3 prefix for a user's data."""
-        return f"users/user_{user_id:03d}"
+        if username:
+            # New format: username_id (e.g., info_1, john_15)
+            return f"users/{username}_{user_id}"
+        else:
+            # Fallback to old format if username not available
+            return f"users/user_{user_id:03d}"
     
     @staticmethod
-    def get_project_prefix(user_id: int, project_id: int) -> str:
+    def get_project_prefix(user_id: int, project_id: int, username: str = None) -> str:
         """Get S3 prefix for a specific project."""
-        return f"users/user_{user_id:03d}/project_{project_id:03d}"
+        user_prefix = S3PathHelper.get_user_prefix(user_id, username)
+        return f"{user_prefix}/project_{project_id:03d}"
     
     @staticmethod
-    def get_current_data_prefix(user_id: int, project_id: int) -> str:
+    def get_current_data_prefix(user_id: int, project_id: int, username: str = None) -> str:
         """Get S3 prefix for current project data."""
-        return f"users/user_{user_id:03d}/project_{project_id:03d}/current"
+        project_prefix = S3PathHelper.get_project_prefix(user_id, project_id, username)
+        return f"{project_prefix}/current"
     
     @staticmethod
-    def get_thumbnails_prefix(user_id: int, project_id: int) -> str:
+    def get_thumbnails_prefix(user_id: int, project_id: int, username: str = None) -> str:
         """Get S3 prefix for project thumbnails."""
-        return f"users/user_{user_id:03d}/project_{project_id:03d}/thumbnails"
+        project_prefix = S3PathHelper.get_project_prefix(user_id, project_id, username)
+        return f"{project_prefix}/thumbnails"
     
     @staticmethod
-    def get_versions_prefix(user_id: int, project_id: int) -> str:
+    def get_versions_prefix(user_id: int, project_id: int, username: str = None) -> str:
         """Get S3 prefix for project versions."""
-        return f"users/user_{user_id:03d}/project_{project_id:03d}/versions"
+        project_prefix = S3PathHelper.get_project_prefix(user_id, project_id, username)
+        return f"{project_prefix}/versions"
     
     @staticmethod
-    def parse_project_path(s3_path: str) -> Optional[Tuple[int, int]]:
+    def parse_project_path(s3_path: str) -> Optional[Tuple[int, int, str]]:
         """
-        Parse user_id and project_id from S3 path.
+        Parse user_id, project_id, and username from S3 path.
         
         Args:
             s3_path: S3 object path
             
         Returns:
-            Tuple of (user_id, project_id) or None if invalid
+            Tuple of (user_id, project_id, username) or None if invalid
         """
         try:
-            # Expected format: users/user_001/project_002/...
+            # Expected formats: 
+            # New: users/john_15/project_002/...
+            # Old: users/user_001/project_002/...
             parts = s3_path.split('/')
             if len(parts) < 3 or parts[0] != 'users':
                 return None
             
-            user_part = parts[1]  # user_001
+            user_part = parts[1]  # john_15 or user_001
             project_part = parts[2]  # project_002
             
-            if not user_part.startswith('user_') or not project_part.startswith('project_'):
+            if not project_part.startswith('project_'):
                 return None
             
-            user_id = int(user_part[5:])  # Remove 'user_' prefix
+            # Parse user part
+            if user_part.startswith('user_'):
+                # Old format: user_001
+                user_id = int(user_part[5:])
+                username = None
+            else:
+                # New format: username_id (e.g., john_15)
+                last_underscore = user_part.rfind('_')
+                if last_underscore == -1:
+                    return None
+                username = user_part[:last_underscore]
+                user_id = int(user_part[last_underscore + 1:])
+            
+            # Parse project ID
             project_id = int(project_part[8:])  # Remove 'project_' prefix
             
-            return user_id, project_id
+            return user_id, project_id, username
             
         except (ValueError, IndexError):
             return None
     
     @staticmethod
-    def is_valid_user_path(s3_path: str, user_id: int) -> bool:
+    def is_valid_user_path(s3_path: str, user_id: int, username: str = None) -> bool:
         """Check if S3 path is valid for a specific user."""
-        expected_prefix = f"users/user_{user_id:03d}/"
+        if username:
+            expected_prefix = f"users/{username}_{user_id}/"
+        else:
+            expected_prefix = f"users/user_{user_id:03d}/"
         return s3_path.startswith(expected_prefix)
     
     @staticmethod
@@ -899,7 +926,7 @@ class S3PathHelper:
     def is_thumbnail_path(s3_path: str) -> bool:
         """Check if S3 path is for thumbnails."""
         return '/thumbnails/' in s3_path
-
+    
 
 # Global S3 credential manager instance
 s3_manager = S3CredentialManager()
