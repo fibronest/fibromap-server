@@ -1148,6 +1148,47 @@ def assign_project_images(project_id):
         logger.error(f"Assign images error: {e}")
         return jsonify({'error': 'Failed to assign images'}), 500
     
+@app.route('/api/projects/<int:project_id>/remove-images', methods=['DELETE'])
+@require_auth
+def remove_project_images(project_id):
+    """Remove s3_images_folder from a project (owner or write permission required)."""
+    try:
+        # Get project
+        project = db_manager.get_project(project_id)
+        
+        if not project:
+            return jsonify({'error': 'Project not found'}), 404
+        
+        # Check if user has permission (owner or write access)
+        is_owner = project.owner_id == g.current_user.user_id
+        has_write = db_manager.get_user_project_permission(project_id, g.current_user.user_id)
+        has_write = has_write and has_write.permission_level in ['write', 'admin']
+        is_admin = g.current_user.role == 'admin'
+        
+        if not is_owner and not has_write and not is_admin:
+            return jsonify({'error': 'You need write permission to remove images'}), 403
+        
+        # Remove the s3_images_folder (set to None)
+        success = db_manager.remove_project_images(project_id, g.current_user.user_id)
+        
+        if not success:
+            return jsonify({'error': 'Failed to remove images'}), 500
+        
+        # Log action
+        audit_log = AuditLog(
+            user_id=g.current_user.user_id,
+            action="remove_project_images",
+            project_id=project_id,
+            details={'removed_by': 'owner' if is_owner else 'user'},
+            ip_address=get_client_ip()
+        )
+        db_manager.log_action(audit_log)
+        
+        return jsonify({'message': 'Images removed successfully'})
+        
+    except Exception as e:
+        logger.error(f"Remove images error: {e}")
+        return jsonify({'error': 'Failed to remove images'}), 500
 
 # Cleanup endpoint (for scheduled jobs)
 @app.route('/api/internal/cleanup', methods=['POST'])

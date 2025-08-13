@@ -652,6 +652,34 @@ class DatabaseManager:
             logger.error(f"Error assigning project images: {e}")
             return False
     
+    def remove_project_images(self, project_id: int, user_id: int) -> bool:
+        """
+        Remove s3_images_folder from a project (set to NULL).
+        
+        Args:
+            project_id: Project ID
+            user_id: User performing the action
+            
+        Returns:
+            True if successful
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE projects 
+                        SET s3_images_folder = NULL,
+                            last_modified_by = %s,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE project_id = %s
+                    """, (user_id, project_id))
+                    
+                    return cursor.rowcount > 0
+                    
+        except Exception as e:
+            logger.error(f"Error removing project images: {e}")
+            return False
+
     def get_all_users(self):
         """Get all users from database."""
         try:
