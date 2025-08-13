@@ -42,7 +42,7 @@ class S3CredentialManager:
         
         # Try to read the variables
         self.data_bucket = os.getenv('S3_BUCKET', 'fibromapdata')
-        self.images_bucket = os.getenv('AWS_IMAGES_BUCKET', 'fibromap-images')
+        self.images_bucket = os.getenv('AWS_IMAGES_BUCKET')
         self.aws_region = os.getenv('AWS_REGION', 'us-east-1')
         self.credential_duration_hours = int(os.getenv('CREDENTIAL_DURATION_HOURS', '1'))
         
@@ -62,6 +62,7 @@ class S3CredentialManager:
         )
         
         self.aws_role_arn = os.getenv('AWS_ROLE_ARN')
+        self.aws_images_role_arn = os.getenv('AWS_IMAGES_ROLE_ARN')
         self.aws_external_id = os.getenv('AWS_EXTERNAL_ID', 'fibromap-2024')
         
         print("\nConfiguration loaded:")
@@ -132,10 +133,10 @@ class S3CredentialManager:
             ip_address: Client IP address for audit logging
             
         Returns:
-            Dictionary containing data bucket credentials
+            Dictionary containing data bucket and images bucket credentials
         """
         try:
-            # Generate data bucket credentials only (skip images for now)
+            # Generate data bucket credentials
             data_credentials = self._generate_data_bucket_credentials(user)
             
             # Check if credential generation was successful
@@ -150,10 +151,11 @@ class S3CredentialManager:
                         (datetime.now() + timedelta(hours=self.credential_duration_hours)).isoformat())
                 }
                 
-                # Skip images bucket for now
-                # images_credentials = self._generate_images_bucket_credentials(user, user_projects)
-                # if images_credentials:
-                #     result['images_bucket'] = images_credentials
+                # Generate images bucket credentials if user has projects with images
+                if user_projects:
+                    images_credentials = self._generate_images_bucket_credentials(user, user_projects)
+                    if images_credentials:
+                        result['images_bucket'] = images_credentials
                 
                 return result
             else:
@@ -163,9 +165,9 @@ class S3CredentialManager:
                 self._log_credential_generation(user.user_id, ip_address, success=False, 
                                             error=error_msg)
                 
-                # Return error response (no fallback to raw credentials for security)
+                # Return error response
                 return {
-                    'data_bucket': data_credentials,  # This contains the error message
+                    'data_bucket': data_credentials,
                     'region': self.aws_region,
                     'expires_at': None
                 }
@@ -175,7 +177,7 @@ class S3CredentialManager:
             self._log_credential_generation(user.user_id, ip_address, success=False, 
                                         error=str(e))
             
-            # Return error response (no raw credentials for security)
+            # Return error response
             return {
                 'data_bucket': {
                     'bucket_name': self.data_bucket,
@@ -609,64 +611,97 @@ class S3CredentialManager:
         Returns:
             Dictionary with AWS credentials and bucket info, or None if no image access needed
         """
-        # Find all unique image folders the user has access to
-        image_folders = set()
-        for project in projects:
-            if project.s3_images_folder:
-                image_folders.add(project.s3_images_folder)
-        
-        if not image_folders:
-            return None
-        
-        # Create IAM policy for images access (read-only)
-        policy_statements = []
-        
-        for folder in image_folders:
+        try:
+            # Find all unique image folders the user has access to
+            image_folders = set()
+            for project in projects:
+                if hasattr(project, 's3_images_folder') and project.s3_images_folder:
+                    image_folders.add(project.s3_images_folder)
+            
+            if not image_folders:
+                logger.info(f"No image folders found for user {user.username}")
+                return None
+            
+            logger.info(f"Generating images credentials for folders: {image_folders}")
+            
+            # Use dedicated images role ARN from environment
+            images_role_arn = os.getenv('AWS_IMAGES_ROLE_ARN')
+            if not images_role_arn:
+                logger.warning("AWS_IMAGES_ROLE_ARN not configured, images access will not work")
+                return None
+            
+            # Create IAM policy for images access (read-only)
+            policy_statements = []
+            
+            # Allow listing the bucket with prefix conditions
+            for folder in image_folders:
+                policy_statements.append({
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:ListBucket"
+                    ],
+                    "Resource": f"arn:aws:s3:::{self.images_bucket}",
+                    "Condition": {
+                        "StringLike": {
+                            "s3:prefix": [f"{folder}/*", f"{folder}"]
+                        }
+                    }
+                })
+            
+            # Allow reading objects from the specified folders
+            resource_list = []
+            for folder in image_folders:
+                resource_list.append(f"arn:aws:s3:::{self.images_bucket}/{folder}/*")
+            
             policy_statements.append({
                 "Effect": "Allow",
                 "Action": [
                     "s3:GetObject",
-                    "s3:ListBucket"
+                    "s3:GetObjectVersion"
                 ],
-                "Resource": [
-                    f"arn:aws:s3:::{self.images_bucket}/{folder}/*",
-                    f"arn:aws:s3:::{self.images_bucket}"
-                ],
-                "Condition": {
-                    "StringLike": {
-                        "s3:prefix": [f"{folder}/*"]
-                    }
-                }
+                "Resource": resource_list
             })
+            
+            policy = {
+                "Version": "2012-10-17",
+                "Statement": policy_statements
+            }
+            
+            # Generate session name
+            session_name = f"fibromap-images-{user.user_id}-{int(datetime.now().timestamp())}"
+            
+            # Assume role with policy
+            credentials = self._assume_role_with_policy(
+                images_role_arn, 
+                session_name, 
+                policy, 
+                self.aws_external_id
+            )
+            
+            if not credentials:
+                logger.error(f"Failed to assume role for images bucket")
+                return None
+            
+            logger.info(f"Successfully generated images bucket credentials for {user.username}")
+            
+            return {
+                'bucket_name': self.images_bucket,
+                'access_key_id': credentials['AccessKeyId'],
+                'secret_access_key': credentials['SecretAccessKey'],
+                'session_token': credentials['SessionToken'],
+                'region': self.aws_region,
+                'expiration': credentials['Expiration'].isoformat() if hasattr(credentials['Expiration'], 'isoformat') else str(credentials['Expiration']),
+                'credential_type': 'sts',
+                'access_level': 'read_only',
+                'accessible_folders': list(image_folders)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating images bucket credentials: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
         
-        policy = {
-            "Version": "2012-10-17",
-            "Statement": policy_statements
-        }
-        
-        # Generate session name
-        session_name = f"fibromap-images-{user.user_id}-{int(datetime.now().timestamp())}"
-        
-        # Assume role with policy
-        response = self.sts_client.assume_role_with_web_identity(
-            RoleArn=os.getenv('AWS_IMAGES_ROLE_ARN'),
-            RoleSessionName=session_name,
-            Policy=json.dumps(policy),
-            DurationSeconds=self.credential_duration_hours * 3600,
-            WebIdentityToken=self._generate_web_identity_token(user)
-        )
-        
-        credentials = response['Credentials']
-        
-        return {
-            'bucket_name': self.images_bucket,
-            'access_key_id': credentials['AccessKeyId'],
-            'secret_access_key': credentials['SecretAccessKey'],
-            'session_token': credentials['SessionToken'],
-            'expiration': credentials['Expiration'].isoformat(),
-            'accessible_folders': list(image_folders)
-        }
-    
     def _generate_web_identity_token(self, user: User) -> str:
         """
         Generate a web identity token for STS assume role.
@@ -695,19 +730,22 @@ class S3CredentialManager:
         token_json = json.dumps(token_data)
         return base64.b64encode(token_json.encode()).decode()
     
-    def refresh_credentials(self, user: User, ip_address: str = None) -> Dict[str, Any]:
+    def refresh_credentials(self, user: User, user_projects: List[Project] = None, 
+                          ip_address: str = None) -> Dict[str, Any]:
         """
         Refresh S3 credentials for a user.
         
         Args:
             user: User object
+            user_projects: List of user's accessible projects
             ip_address: Client IP address for audit logging
             
         Returns:
             New credentials dictionary
         """
         logger.info(f"Refreshing S3 credentials for user {user.username}")
-        return self.generate_user_credentials(user, ip_address=ip_address)
+        return self.generate_user_credentials(user, user_projects=user_projects, 
+                                             ip_address=ip_address)
     
     def validate_bucket_access(self, user: User, bucket_name: str, s3_path: str) -> bool:
         """

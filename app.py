@@ -121,7 +121,13 @@ def login():
         
         # Generate S3 credentials
         try:
-            s3_credentials = s3_manager.generate_user_credentials(user, ip_address=get_client_ip())
+            # Get user's projects to determine image folder access
+            user_projects = db_manager.get_user_projects(user.user_id)
+            s3_credentials = s3_manager.generate_user_credentials(
+                user, 
+                user_projects=user_projects,
+                ip_address=get_client_ip()
+            )
         except Exception as e:
             logger.error(f"Failed to generate S3 credentials: {e}")
             s3_credentials = None
@@ -177,8 +183,15 @@ def register():
 def refresh_credentials():
     """Refresh S3 credentials for authenticated user."""
     try:
+        # Get user's projects to determine image folder access
+        user_projects = db_manager.get_user_projects(g.current_user.user_id)
+        
         # Generate new S3 credentials
-        s3_credentials = s3_manager.refresh_credentials(g.current_user, get_client_ip())
+        s3_credentials = s3_manager.generate_user_credentials(
+            g.current_user,
+            user_projects=user_projects,
+            ip_address=get_client_ip()
+        )
         
         return jsonify({
             'message': 'Credentials refreshed',
@@ -1134,7 +1147,7 @@ def assign_project_images(project_id):
     except Exception as e:
         logger.error(f"Assign images error: {e}")
         return jsonify({'error': 'Failed to assign images'}), 500
-
+    
 
 # Cleanup endpoint (for scheduled jobs)
 @app.route('/api/internal/cleanup', methods=['POST'])
