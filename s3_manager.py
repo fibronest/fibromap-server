@@ -616,7 +616,12 @@ class S3CredentialManager:
             image_folders = set()
             for project in projects:
                 if hasattr(project, 's3_images_folder') and project.s3_images_folder:
-                    image_folders.add(project.s3_images_folder)
+                    # Clean the folder path
+                    folder = project.s3_images_folder
+                    folder = folder.replace('s3://pharmaneststandard/', '')
+                    folder = folder.replace('s3://', '')
+                    folder = folder.rstrip('/')  # Remove trailing slash
+                    image_folders.add(folder)
             
             if not image_folders:
                 logger.info(f"No image folders found for user {user.username}")
@@ -643,7 +648,11 @@ class S3CredentialManager:
                     "Resource": f"arn:aws:s3:::{self.images_bucket}",
                     "Condition": {
                         "StringLike": {
-                            "s3:prefix": [f"{folder}/*", f"{folder}"]
+                            "s3:prefix": [
+                                f"{folder}/*",
+                                f"{folder}/",
+                                f"{folder}"
+                            ]
                         }
                     }
                 })
