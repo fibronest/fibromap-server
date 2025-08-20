@@ -136,6 +136,10 @@ class S3CredentialManager:
             Dictionary containing data bucket and images bucket credentials
         """
         try:
+            if user_projects is None:
+                        from database import db_manager
+                        user_projects = db_manager.get_user_projects(user.user_id)
+                        logger.info(f"Fetched {len(user_projects)} accessible projects for user {user.username}")
             # Generate data bucket credentials
             data_credentials = self._generate_data_bucket_credentials(user)
             
@@ -568,12 +572,63 @@ class S3CredentialManager:
         
         user_prefix = f"users/{user.username}"
         
-        # TODO: In the future, fetch shared project prefixes from database
-        # For now, just give access to user's own folder
-        shared_prefixes = None
+        # FIXED: Fetch shared project prefixes from database
+        shared_prefixes = []
+        try:
+            # Import database functions
+            from database import db_manager
+            
+            # Get all projects this user has access to
+            user_projects = db_manager.get_user_projects(user.user_id)
+            
+            logger.info(f"User {user.username} has access to {len(user_projects)} projects")
+            
+            # Add S3 paths for projects not owned by this user (shared projects)
+            for project in user_projects:
+                # Check if this is a shared project (not owned by current user)
+                if project.owner_id != user.user_id:
+                    # Get the S3 path for this project
+                    if hasattr(project, 's3_data_path') and project.s3_data_path:
+                        # Clean up the path - remove trailing slash, ensure it's just the prefix
+                        shared_path = project.s3_data_path.rstrip('/')
+                        
+                        # The s3_data_path might be like "users/info/new_start/"
+                        # We need to give access to this path and its subfolders
+                        if shared_path not in shared_prefixes:
+                            shared_prefixes.append(shared_path)
+                            logger.info(f"  Added shared project path: {shared_path}")
+                            
+                            # Also add the specific subfolders we need
+                            shared_prefixes.append(f"{shared_path}/current")
+                            shared_prefixes.append(f"{shared_path}/versions")
+                            shared_prefixes.append(f"{shared_path}/thumbnails")
+                    else:
+                        # If no s3_data_path, construct it from owner info
+                        project_owner = db_manager.get_user_by_id(project.owner_id)
+                        if project_owner:
+                            safe_project_name = project.project_name.replace(' ', '_')
+                            shared_path = f"users/{project_owner.username}/projects/{safe_project_name}"
+                            if shared_path not in shared_prefixes:
+                                shared_prefixes.append(shared_path)
+                                logger.info(f"  Added constructed shared path: {shared_path}")
+                                
+                                # Add subfolders
+                                shared_prefixes.append(f"{shared_path}/current")
+                                shared_prefixes.append(f"{shared_path}/versions")
+                                shared_prefixes.append(f"{shared_path}/thumbnails")
+            
+            if shared_prefixes:
+                logger.info(f"Total shared prefixes added: {len(shared_prefixes)}")
+            else:
+                logger.info("No shared projects found for this user")
+                
+        except Exception as e:
+            logger.error(f"Error fetching shared project prefixes: {e}")
+            # Continue without shared prefixes rather than failing entirely
+            shared_prefixes = []
         
         # Create user policy with restrictions
-        policy = self._create_user_policy(user_prefix, shared_prefixes)
+        policy = self._create_user_policy(user_prefix, shared_prefixes if shared_prefixes else None)
         
         # Generate session name
         session_name = f"fibromap-user-{user.user_id}-{int(datetime.now().timestamp())}"
@@ -597,9 +652,9 @@ class S3CredentialManager:
             'credential_type': 'sts',
             'user_role': 'user',
             'access_level': 'restricted',
-            'accessible_prefixes': [user_prefix] + (shared_prefixes or [])
+            'accessible_prefixes': [user_prefix] + (shared_prefixes if shared_prefixes else [])
         }
-    
+
     def _generate_images_bucket_credentials(self, user: User, projects: List[Project]) -> Optional[Dict[str, Any]]:
         """
         Generate temporary credentials for company images bucket access.
@@ -818,7 +873,7 @@ class S3CredentialManager:
             return {}
         
         safe_project_name = project.project_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
-        base_path = f"users/{user.username}/{safe_project_name}"
+        base_path = f"users/{user.username}/projects/{safe_project_name}"
         
         return {
             'current_path': f"{base_path}/current",
@@ -852,7 +907,7 @@ class S3CredentialManager:
             return ""
         
         safe_project_name = project.project_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
-        base_path = f"users/{user.username}/{safe_project_name}/versions"
+        base_path = f"users/{user.username}/projects/{safe_project_name}/versions"
         
         # Format: 2025-01-15_10-30-00_userA or 2025-01-15_10-30-00_userA_overwritten
         timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S")
@@ -903,7 +958,7 @@ class S3PathHelper:
         """Generate S3 prefix for a project."""
         user_prefix = f"users/{username}"
         safe_project_name = project_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
-        return f"{user_prefix}/{safe_project_name}/"
+        return f"{user_prefix}/projects/{safe_project_name}/"
     
     @staticmethod
     def get_current_data_prefix(user_id: int, project_id: int, username: str = None) -> str:
