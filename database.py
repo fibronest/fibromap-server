@@ -532,36 +532,64 @@ class DatabaseManager:
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
-                    # Get projects where user is owner OR has explicit permissions
-                    # Include owner username and permission level
-                    cursor.execute("""
-                        SELECT DISTINCT 
-                            p.project_id, 
-                            p.project_name, 
-                            p.description,
-                            p.owner_id,
-                            p.created_at,
-                            p.updated_at,
-                            p.last_modified_by,
-                            p.version_count,
-                            p.s3_data_path,
-                            p.s3_images_folder,
-                            CASE 
-                                WHEN p.owner_id = %s THEN 'owner'
-                                ELSE COALESCE(pp.permission_level, 'read')
-                            END as permission_level,
-                            u.username as owner_username
-                        FROM projects p
-                        LEFT JOIN project_permissions pp ON p.project_id = pp.project_id AND pp.user_id = %s
-                        LEFT JOIN users u ON p.owner_id = u.user_id
-                        WHERE p.is_active = true 
-                        AND (p.owner_id = %s OR pp.user_id = %s)
-                        ORDER BY p.updated_at DESC
-                    """, (user_id, user_id, user_id, user_id))
+                    # First check if user is admin
+                    cursor.execute("SELECT role FROM users WHERE user_id = %s", (user_id,))
+                    user_row = cursor.fetchone()
+                    is_admin = user_row and user_row[0] == 'admin'
+                    
+                    if is_admin:
+                        # Admin users see ALL projects
+                        cursor.execute("""
+                            SELECT DISTINCT 
+                                p.project_id, 
+                                p.project_name, 
+                                p.description,
+                                p.owner_id,
+                                p.created_at,
+                                p.updated_at,
+                                p.last_modified_by,
+                                p.version_count,
+                                p.s3_data_path,
+                                p.s3_images_folder,
+                                CASE 
+                                    WHEN p.owner_id = %s THEN 'owner'
+                                    ELSE 'admin'
+                                END as permission_level,
+                                u.username as owner_username
+                            FROM projects p
+                            LEFT JOIN users u ON p.owner_id = u.user_id
+                            WHERE p.is_active = true
+                            ORDER BY p.updated_at DESC
+                        """, (user_id,))
+                    else:
+                        # Regular users only see their projects or shared projects
+                        cursor.execute("""
+                            SELECT DISTINCT 
+                                p.project_id, 
+                                p.project_name, 
+                                p.description,
+                                p.owner_id,
+                                p.created_at,
+                                p.updated_at,
+                                p.last_modified_by,
+                                p.version_count,
+                                p.s3_data_path,
+                                p.s3_images_folder,
+                                CASE 
+                                    WHEN p.owner_id = %s THEN 'owner'
+                                    ELSE COALESCE(pp.permission_level, 'read')
+                                END as permission_level,
+                                u.username as owner_username
+                            FROM projects p
+                            LEFT JOIN project_permissions pp ON p.project_id = pp.project_id AND pp.user_id = %s
+                            LEFT JOIN users u ON p.owner_id = u.user_id
+                            WHERE p.is_active = true 
+                            AND (p.owner_id = %s OR pp.user_id = %s)
+                            ORDER BY p.updated_at DESC
+                        """, (user_id, user_id, user_id, user_id))
                     
                     projects = []
                     for row in cursor.fetchall():
-                        
                         project = Project(
                             project_id=row[0],
                             project_name=row[1],
@@ -578,8 +606,7 @@ class DatabaseManager:
                         project.permission_level = row[10]
                         project.owner_username = row[11]
                         
-                        # More debug logging
-                        logger.info(f"Set on project object: owner_username={project.owner_username}, permission={project.permission_level}")
+                        logger.info(f"Project for user {user_id}: {project.project_name}, permission={project.permission_level}")
                         
                         projects.append(project)
                     
@@ -590,7 +617,7 @@ class DatabaseManager:
             import traceback
             logger.error(traceback.format_exc())
             return []
-    
+        
     def update_project(self, project_id: int, updated_at: datetime, last_modified_by: int, version_count: int = None) -> bool:
         """Update project metadata after save."""
         try:
