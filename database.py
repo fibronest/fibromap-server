@@ -91,6 +91,11 @@ class DatabaseManager:
         """Return a database connection to the pool."""
         self.pool.putconn(conn)
     
+    def _sanitize_ip(self, ip_address: str) -> Optional[str]:
+        """Extract only the first IP from a potentially comma-separated X-Forwarded-For string."""
+        if not ip_address:
+            return None
+        return ip_address.split(',')[0].strip()
     def close_all_connections(self):
         """Close all database connections."""
         if self.pool:
@@ -287,7 +292,7 @@ class DatabaseManager:
                                             user_agent, expires_at, is_remember_me)
                         VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """, (session.session_id, session.user_id, session.token_hash,
-                          session.ip_address, session.user_agent, session.expires_at,
+                          self._sanitize_ip(session.ip_address), session.user_agent, session.expires_at,
                           session.is_remember_me))
                     
                     conn.commit()
@@ -1109,7 +1114,7 @@ class DatabaseManager:
                         INSERT INTO audit_log (user_id, action, project_id, details, ip_address, success)
                         VALUES (%s, %s, %s, %s, %s, %s)
                     """, (audit_log.user_id, audit_log.action, audit_log.project_id,
-                          json.dumps(audit_log.details), audit_log.ip_address, audit_log.success))
+                          json.dumps(audit_log.details), self._sanitize_ip(audit_log.ip_address), audit_log.success))
                     
                     conn.commit()
                     return cursor.rowcount > 0
